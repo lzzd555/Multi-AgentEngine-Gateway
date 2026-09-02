@@ -3,6 +3,7 @@
 import { realpathSync } from "node:fs"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { parseGatewayOptions, gatewayUsage } from "./options.js"
+import { loadGatewayConfig, missingApiKeyEnvWarnings, assembleGatewayRuntime } from "./gateway-config.js"
 import { createEngine } from "./engines/engine-adapter.js"
 import { createEventBus } from "./event-bus.js"
 import { createSessionRegistry } from "./session-registry.js"
@@ -35,7 +36,17 @@ export async function main(argv = process.argv.slice(2)) {
     process.stdout.write(`${gatewayUsage()}\n`)
     return
   }
-  const gateway = buildGateway(options)
+  const config = loadGatewayConfig({ configPath: options.configPath })
+  if (config) {
+    for (const warning of config.warnings) process.stderr.write(`gateway config warning: ${warning}\n`)
+    for (const warning of missingApiKeyEnvWarnings(config)) process.stderr.write(`gateway config warning: ${warning}\n`)
+  }
+  const runtime = assembleGatewayRuntime(options, config, process.env)
+  const gateway = buildGateway({
+    ...options,
+    ...(runtime.defaultModel ? { defaultModel: runtime.defaultModel } : {}),
+    engineOptions: runtime.engineOptions
+  })
   // A busy port (EADDRINUSE) would otherwise crash with a raw stack; exit 1 with one clean line.
   gateway.server.once("error", (error) => {
     process.stderr.write(`gateway failed to start on ${options.host}:${options.port}: ${error.message}\n`)

@@ -18,7 +18,9 @@ export function parseGatewayOptions(args, environment = process.env) {
     engine: environment.AGENT_ENGINE ?? environment.ENGINE ?? environment.HARNESS_REMOTE_BACKEND ?? "opencode",
     host: environment.GATEWAY_HOST ?? "localhost",
     port: parsePort(environment.GATEWAY_PORT ?? "6217"),
-    defaultModel: environment.GATEWAY_DEFAULT_MODEL ?? "zai/glm-5.2"
+    defaultModel: environment.GATEWAY_DEFAULT_MODEL ?? "zai/glm-5.2",
+    configPath: undefined,
+    defaultModelExplicit: Boolean(environment.GATEWAY_DEFAULT_MODEL)
   }
   for (let index = 0; index < args.length; index += 1) {
     switch (args[index]) {
@@ -36,6 +38,11 @@ export function parseGatewayOptions(args, environment = process.env) {
         break
       case "--model":
         options.defaultModel = requireValue(args, index, "--model")
+        options.defaultModelExplicit = true
+        index += 1
+        break
+      case "--config":
+        options.configPath = requireValue(args, index, "--config")
         index += 1
         break
       case "--help":
@@ -56,6 +63,7 @@ export function gatewayUsage() {
     "  --engine <name>   Agent engine: opencode, omp, pi (env AGENT_ENGINE; default opencode)",
     "  --host <host>     Bind host (default localhost)",
     "  --port <port>     Bind port (default 6217)",
-    "  --model <id>      Default model wire name (default zai/glm-5.2)"
+    "  --model <id>      Default model wire name (default zai/glm-5.2)",
+    "  --config <path>   Unified gateway config file (default ./gateway.config.json; env GATEWAY_CONFIG)"
   ].join("\n")
 }

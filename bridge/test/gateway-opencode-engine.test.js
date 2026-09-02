@@ -1,6 +1,7 @@
 // bridge/test/gateway-opencode-engine.test.js
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { EventEmitter } from "node:events"
 import { createOpenCodeEngine } from "../src/gateway/engines/opencode-engine.js"
 import { createFakeOpencodeUpstream } from "./helpers/fake-opencode-upstream.js"
 
@@ -91,4 +92,35 @@ test("delayed busy marking does not make prompt resolve before the turn ends", a
   } finally {
     await upstream.close()
   }
+})
+
+function fakeChild() {
+  const child = new EventEmitter()
+  child.stdout = new EventEmitter()
+  child.stderr = new EventEmitter()
+  child.stdout.setEncoding = () => {}
+  child.stderr.setEncoding = () => {}
+  child.pid = 4242
+  child.kill = () => true
+  return child
+}
+
+test("engine injects env and args into the managed host spawn", async () => {
+  const spawns = []
+  const engine = createOpenCodeEngine({
+    command: "/opt/opencode/bin/opencode",
+    args: ["--flag"],
+    env: { OPENCODE_CONFIG: "/tmp/generated/opencode.json" },
+    spawnProcess: (command, args, options) => { spawns.push({ command, args, options }); return fakeChild() },
+    startTimeoutMs: 5,
+    waitUntilReady: async () => {}
+  })
+  await engine.initialize()
+  const spawn = spawns.at(-1)
+  assert.equal(spawn.command, "/opt/opencode/bin/opencode")
+  assert.deepEqual(spawn.args, ["serve", "--hostname", "127.0.0.1", "--port", "14096", "--flag"])
+  assert.equal(spawn.options.env.OPENCODE_CONFIG, "/tmp/generated/opencode.json")
+  // env 是叠加在 process.env 之上，而非整体替换
+  assert.equal(spawn.options.env.PATH, process.env.PATH)
+  await engine.dispose()
 })

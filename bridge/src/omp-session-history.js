@@ -309,7 +309,14 @@ function resolveBranch(journal, activeSessionLeaf) {
  */
 const OMP_SESSION_LISTING_TTL_MS = 1_000
 
-export function createOmpHistoryLoader(sessionRoot = path.join(homedir(), ".omp", "agent", "sessions")) {
+// OMP 子进程把 journal 根跟随 PI_CONFIG_DIR 重定向（home 相对名），网关的默认读取路径必须
+// 与之一致——PI loader 已跟随其 env，OMP 不跟随会造成"子进程写重定向根、网关仍读 ~/.omp"。
+// 取值放在默认参数表达式里于调用时求值，读的是当前 env 而非模块加载时的快照。
+export function defaultOmpSessionRoot() {
+  return path.join(homedir(), process.env.PI_CONFIG_DIR ?? ".omp", "agent", "sessions")
+}
+
+export function createOmpHistoryLoader(sessionRoot = defaultOmpSessionRoot()) {
   const sessionFiles = new Map()
   let listing = []
   let listedAt = 0

@@ -21,6 +21,8 @@ const engineUnavailable = (message) => Object.assign(new Error(message), { code:
 
 export function createOpenCodeEngine({
   command = process.env.OPENCODE_COMMAND ?? "opencode",
+  args = [],
+  env = {},
   host = "127.0.0.1",
   upstreamPort = Number(process.env.GATEWAY_OPENCODE_PORT ?? 14096),
   username = "gateway",
@@ -30,7 +32,9 @@ export function createOpenCodeEngine({
   fetchImpl = fetch,
   sleepImpl = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
-  promptTimeoutMs = DEFAULT_PROMPT_TIMEOUT_MS
+  promptTimeoutMs = DEFAULT_PROMPT_TIMEOUT_MS,
+  spawnProcess,
+  waitUntilReady
 } = {}) {
   const base = `http://${host}:${upstreamPort}`
   const authorization = `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`
@@ -143,7 +147,13 @@ export function createOpenCodeEngine({
     async initialize() {
       running = true
       if (manageHost) {
-        managedHost = new ManagedOpenCodeHost({ command, host, port: upstreamPort, username, password, startTimeoutMs })
+        managedHost = new ManagedOpenCodeHost({
+          command, host, port: upstreamPort, username, password, startTimeoutMs,
+          environment: { ...process.env, ...env },
+          extraArgs: args,
+          ...(spawnProcess ? { spawnProcess } : {}),
+          ...(waitUntilReady ? { waitUntilReady } : {})
+        })
         managedHost.on("unavailable", () => emit({ type: "session.error", properties: { error: { message: "OpenCode upstream exited" } } }))
         await managedHost.start()
       }

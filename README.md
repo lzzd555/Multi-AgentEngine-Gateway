@@ -12,27 +12,32 @@
 - **网关核心零外部依赖**（纯 Node 内置模块），与引擎驱动层解耦，由 import 边界测试强制执行
 - `prompt_async` 阻塞至本轮完成；消息含 `tool_calls` / `info.finish` / `step-finish`，满足裁判完成判定
 - 引擎切换：`--engine opencode|omp|pi` 或环境变量 `AGENT_ENGINE`
+- **网关统一配置** `gateway.config.json`：模型 provider 一处声明，启动时自动生成三引擎隔离配置（发现顺序与注入细节见 solution/config-templates/README.md）
 
 ## 快速开始
 
 ```bash
-# 1. 安装引擎（按需）
+# 1. 安装引擎（按需）并设置密钥
 npm install -g opencode-ai                 # OpenCode
 curl -fsSL https://omp.sh/install | sh     # OMP（注意 PATH 需含 ~/.local/bin）
 # PI 无需安装（@automatalabs/pi-acp 经 npx 拉起）
+export ZAI_API_KEY=<你的key>
 
-# 2. 配置 GLM5.2（各引擎 provider 配置，见 solution/config-templates/README.md）
+# 2. 复制统一配置并启动（默认端口 6217；配置详解见 solution/config-templates/README.md）
+cp gateway.config.example.json gateway.config.json
+node bridge/src/gateway/main.js --engine opencode --port 6217
 
-# 3. 启动网关（默认端口 6217）
-AGENT_ENGINE=opencode node bridge/src/gateway/main.js --port 6217
-
-# 4. 全链路自检（10 项 ✓/✗）
+# 3. 全链路自检（10 项 ✓/✗）
 npm run rehearsal
 
-# 5. 测试 / 打包评测交付物
+# 4. 测试 / 打包评测交付物
 npm test                    # 规范符合性 + 单元/集成测试
 npm run package             # 生成 solution.zip
 ```
+
+启动时网关按 `gateway.config.json` 为所选 `--engine` 在 `~/.multi-agentengine-gateway/` 下自动生成隔离配置（`opencode/`、`omp/`、`pi/` 各自独立、互不覆盖），并经 `OPENCODE_CONFIG` / `PI_CONFIG_DIR` / `PI_CODING_AGENT_DIR` 注入该引擎子进程，三引擎共用同一份 provider 定义，无需手工改各引擎自己的配置文件。
+
+> 附注：引擎侧直配（可选）。不走统一配置时，可按 `solution/config-templates/README.md` 的「引擎侧直配（可选）」把 provider 配置直接并入各引擎自己的配置文件（`~/.config/opencode/opencode.json`、`~/.omp/agent/models.yml`、`~/.pi/agent/models.json`），并用 `GATEWAY_DEFAULT_MODEL=zaicoding/glm-5.2` 指定默认模型——网关未发现 `gateway.config.json`（且未传 `--config` / `GATEWAY_CONFIG`）时即走该路径。
 
 ## 目录结构
 
@@ -47,7 +52,7 @@ docs/superpowers/          设计文档、实施计划、实测记录（run-note
 
 ## 实测状态
 
-OpenCode 1.18.26 / OMP 18.1.2 / PI(pi-acp 0.5.0) 三引擎经网关接入 GLM5.2 后 rehearsal 均 10/10（2026-09-02，macOS）。详见 `docs/superpowers/plans/2026-09-01-multi-engine-gateway-run-notes.md`。待办：Windows 实机复验、评测全量用例。
+OpenCode 1.18.26 / OMP 18.1.2 / PI(pi-acp 0.5.0) 三引擎经网关接入 GLM5.2 后 rehearsal 均 10/10（2026-09-02，macOS，引擎侧直配路径；统一配置路径的三引擎复验待真实 key，见 `docs/superpowers/plans/2026-09-02-unified-gateway-config-run-notes.md`）。详见 `docs/superpowers/plans/2026-09-01-multi-engine-gateway-run-notes.md`。待办：Windows 实机复验、评测全量用例。
 
 ## 来源与许可
 

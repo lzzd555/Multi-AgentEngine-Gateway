@@ -45,3 +45,19 @@ test("usage mentions engine and port", () => {
   assert.match(gatewayUsage(), /--engine/)
   assert.match(gatewayUsage(), /6217/)
 })
+
+test("--config sets configPath and requires a value", () => {
+  const options = parseGatewayOptions(["--config", "/tmp/gw.json"], {})
+  assert.equal(options.configPath, "/tmp/gw.json")
+  assert.throws(() => parseGatewayOptions(["--config"], {}), /--config requires a value/)
+})
+
+test("defaultModelExplicit reflects cli/env overrides only", () => {
+  assert.equal(parseGatewayOptions([], {}).defaultModelExplicit, false)
+  assert.equal(parseGatewayOptions([], { GATEWAY_DEFAULT_MODEL: "zai/glm-5.2-air" }).defaultModelExplicit, true)
+  assert.equal(parseGatewayOptions(["--model", "zai/x"], {}).defaultModelExplicit, true)
+})
+
+test("usage mentions --config", () => {
+  assert.match(gatewayUsage(), /--config/)
+})

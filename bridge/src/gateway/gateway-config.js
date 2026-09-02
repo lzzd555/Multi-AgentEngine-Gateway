@@ -1,0 +1,270 @@
+// bridge/src/gateway/gateway-config.js
+// 网关统一配置：加载/校验 gateway.config.json；生成三引擎隔离配置并组装启动参数。
+// 规格见 docs/superpowers/specs/2026-09-02-unified-gateway-config-design.md
+import fs from "node:fs"
+import path from "node:path"
+import { homedir } from "node:os"
+
+const ENGINE_IDS = ["opencode", "omp", "pi"]
+const ALLOWED_APIS = ["openai-completions", "openai-responses", "anthropic-messages"]
+const BUILTIN_PROVIDER_FAMILY = new Set(["zai", "zhipu", "bigmodel", "glm"])
+const PROVIDER_ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/
+const WIRE_MODEL_PATTERN = /^[^/\s]+\/[^/\s]+$/
+export const DEFAULT_STATE_DIRNAME = ".multi-agentengine-gateway"
+
+export function expandHome(value) {
+  if (typeof value !== "string") return value
+  if (value === "~") return homedir()
+  if (value.startsWith("~/")) return path.join(homedir(), value.slice(2))
+  return value
+}
+
+export function findGatewayConfigFile({ configPath, environment = process.env, cwd = process.cwd(), existsSync = fs.existsSync }) {
+  const explicit = configPath ?? environment.GATEWAY_CONFIG
+  if (explicit) return path.resolve(expandHome(explicit))
+  const candidate = path.join(cwd, "gateway.config.json")
+  return existsSync(candidate) ? candidate : null
+}
+
+function readConfigFile(filePath) {
+  let raw
+  try {
+    raw = fs.readFileSync(filePath, "utf8")
+  } catch (error) {
+    throw new Error(`gateway config not readable at ${filePath}: ${error.message}`)
+  }
+  try {
+    return JSON.parse(raw)
+  } catch (error) {
+    throw new Error(`gateway config is not valid JSON (${filePath}): ${error.message}`)
+  }
+}
+
+function validateProvider(id, definition, sourcePath) {
+  if (typeof definition !== "object" || definition === null) throw new Error(`${sourcePath}: model.providers.${id} must be an object`)
+  if (typeof definition.baseUrl !== "string" || !/^https?:\/\//.test(definition.baseUrl)) {
+    throw new Error(`${sourcePath}: model.providers.${id}.baseUrl must be an http(s) URL`)
+  }
+  if (typeof definition.apiKey !== "string" || !definition.apiKey) {
+    throw new Error(`${sourcePath}: model.providers.${id}.apiKey must be a non-empty string`)
+  }
+  if (!ALLOWED_APIS.includes(definition.api)) {
+    throw new Error(`${sourcePath}: model.providers.${id}.api must be one of ${ALLOWED_APIS.join(", ")}`)
+  }
+  if (typeof definition.models !== "object" || definition === null || Array.isArray(definition.models) || Object.keys(definition.models).length === 0) {
+    throw new Error(`${sourcePath}: model.providers.${id}.models must be a non-empty object`)
+  }
+  for (const [modelID, meta] of Object.entries(definition.models)) {
+    if (typeof meta !== "object" || meta === null) throw new Error(`${sourcePath}: model.providers.${id}.models.${modelID} must be an object`)
+  }
+}
+
+function validateEngines(engines, providers, sourcePath) {
+  if (engines === undefined) return {}
+  if (typeof engines !== "object" || engines === null || Array.isArray(engines)) {
+    throw new Error(`${sourcePath}: engines must be an object`)
+  }
+  for (const [id, engine] of Object.entries(engines)) {
+    if (!ENGINE_IDS.includes(id)) throw new Error(`${sourcePath}: Unknown engine '${id}'. Available: ${ENGINE_IDS.join(", ")}`)
+    if (typeof engine !== "object" || engine === null) throw new Error(`${sourcePath}: engines.${id} must be an object`)
+    if (engine.command !== undefined && typeof engine.command !== "string") throw new Error(`${sourcePath}: engines.${id}.command must be a string`)
+    if (engine.args !== undefined) {
+      if (!Array.isArray(engine.args) || engine.args.some((arg) => typeof arg !== "string")) {
+        throw new Error(`${sourcePath}: engines.${id}.args must be an array of strings`)
+      }
+    }
+    if (engine.model !== undefined) {
+      if (typeof engine.model !== "string" || !WIRE_MODEL_PATTERN.test(engine.model)) {
+        throw new Error(`${sourcePath}: engines.${id}.model must look like providerID/modelID`)
+      }
+    }
+  }
+  return engines
+}
+
+export function validateGatewayConfig(parsed, sourcePath) {
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`${sourcePath}: gateway config must be a JSON object`)
+  }
+  const warnings = []
+  const modelSection = parsed.model ?? {}
+  if (typeof modelSection !== "object" || modelSection === null) throw new Error(`${sourcePath}: model must be an object`)
+  const providerEntries = Object.entries(modelSection.providers ?? {})
+  if (modelSection.providers !== undefined && (typeof modelSection.providers !== "object" || modelSection.providers === null)) {
+    throw new Error(`${sourcePath}: model.providers must be an object`)
+  }
+  const providers = {}
+  for (const [id, rawDefinition] of providerEntries) {
+    if (!PROVIDER_ID_PATTERN.test(id)) throw new Error(`${sourcePath}: provider id '${id}' must match ${PROVIDER_ID_PATTERN}`)
+    validateProvider(id, rawDefinition, sourcePath)
+    if (BUILTIN_PROVIDER_FAMILY.has(id)) {
+      warnings.push(`provider id '${id}' collides with an OMP/PI builtin provider family; a distinct id (e.g. 'zaicoding') is recommended`)
+    }
+    providers[id] = {
+      baseUrl: rawDefinition.baseUrl,
+      apiKey: rawDefinition.apiKey,
+      api: rawDefinition.api,
+      models: Object.fromEntries(Object.entries(rawDefinition.models).map(([mid, meta]) => [mid, { name: meta.name ?? mid }]))
+    }
+  }
+  let defaultModel
+  if (providerEntries.length > 0) {
+    if (typeof modelSection.default !== "string") throw new Error(`${sourcePath}: model.default is required when model.providers is set`)
+    if (!WIRE_MODEL_PATTERN.test(modelSection.default)) throw new Error(`${sourcePath}: model.default must look like providerID/modelID`)
+    const [providerID, modelID] = modelSection.default.split("/")
+    if (!providers[providerID]?.models[modelID]) {
+      throw new Error(`${sourcePath}: model.default '${modelSection.default}' resolves to no defined provider/model`)
+    }
+    defaultModel = modelSection.default
+  }
+  const engines = validateEngines(parsed.engines, providers, sourcePath)
+  for (const [id, engine] of Object.entries(engines)) {
+    if (engine.command !== undefined) engines[id] = { ...engine, command: expandHome(engine.command) }
+  }
+  return { model: { providers, default: defaultModel }, engines, warnings }
+}
+
+export function loadGatewayConfig({ configPath, environment = process.env, cwd = process.cwd(), readFile = readConfigFile, existsSync = fs.existsSync } = {}) {
+  const file = findGatewayConfigFile({ configPath, environment, cwd, existsSync })
+  if (!file) return null
+  const validated = validateGatewayConfig(readFile(file), file)
+  return { path: file, ...validated }
+}
+
+export function resolveStateDir(environment = process.env) {
+  return expandHome(environment.GATEWAY_STATE_DIR ?? path.join(homedir(), DEFAULT_STATE_DIRNAME))
+}
+
+export function apiKeyReference(apiKey) {
+  const match = /^\{env:([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(apiKey)
+  return match ? { env: match[1] } : { literal: apiKey }
+}
+
+export function buildOpenCodeProviderConfig(model) {
+  const provider = {}
+  for (const [id, definition] of Object.entries(model.providers)) {
+    provider[id] = {
+      npm: "@ai-sdk/openai-compatible",
+      name: id,
+      options: { baseURL: definition.baseUrl, apiKey: definition.apiKey },
+      models: Object.fromEntries(Object.entries(definition.models).map(([mid, meta]) => [mid, { name: meta.name }]))
+    }
+  }
+  return { provider }
+}
+
+// OMP models.yml 是固定两层结构；网关零依赖，不引 YAML 库，这里手写最小序列化。
+function yamlScalar(value) {
+  const text = String(value)
+  if (!/^[A-Za-z0-9._~:/$-]+$/.test(text)) return JSON.stringify(text)
+  // YAML 1.1 会把裸的 true/false/null/yes/no/on/off/~/- 与纯数字强转为布尔/空/数值，这些词必须加引号保字符串。
+  if (/^(?:true|false|null|yes|no|on|off|~|-)?$/i.test(text) || /^[-+.]?[0-9][0-9_.eE+-]*$/.test(text)) return JSON.stringify(text)
+  return text
+}
+
+export function buildOmpModelsYaml(model) {
+  const lines = ["providers:"]
+  for (const [id, definition] of Object.entries(model.providers)) {
+    const key = apiKeyReference(definition.apiKey)
+    lines.push(`  ${id}:`)
+    lines.push(`    baseUrl: ${yamlScalar(definition.baseUrl)}`)
+    lines.push(`    api: ${yamlScalar(definition.api)}`)
+    lines.push(`    apiKey: ${yamlScalar(key.env ?? key.literal)}`)
+    lines.push("    models:")
+    for (const [mid, meta] of Object.entries(definition.models)) {
+      lines.push(`      - id: ${yamlScalar(mid)}`)
+      lines.push(`        name: ${yamlScalar(meta.name)}`)
+    }
+  }
+  return `${lines.join("\n")}\n`
+}
+
+export function buildPiModelsJson(model) {
+  const providers = {}
+  for (const [id, definition] of Object.entries(model.providers)) {
+    const key = apiKeyReference(definition.apiKey)
+    providers[id] = {
+      baseUrl: definition.baseUrl,
+      api: definition.api,
+      apiKey: key.env ? `$${key.env}` : key.literal,
+      models: Object.entries(definition.models).map(([mid, meta]) => ({ id: mid, name: meta.name }))
+    }
+  }
+  return { providers }
+}
+
+// OMP 的 PI_CONFIG_DIR 语义是 home 下的相对目录名（path.join(homedir(), value)），
+// 绝对路径会被拼坏，因此 stateDir 必须位于 home 之下（规格 §3）。
+function ompConfigDirName(stateDir, home = homedir()) {
+  const relative = path.relative(home, stateDir)
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`GATEWAY_STATE_DIR must live under the home directory for the OMP engine (PI_CONFIG_DIR is a home-relative name); got ${stateDir}`)
+  }
+  return relative.split(path.sep).join("/")
+}
+
+export function provisionEngineConfig(engineId, config, { stateDir = resolveStateDir(), mkdirSync = fs.mkdirSync, writeFileSync = fs.writeFileSync } = {}) {
+  const providers = config?.model?.providers
+  if (!providers || Object.keys(providers).length === 0) return { env: {}, files: [] }
+  if (engineId === "opencode") {
+    const dir = path.join(stateDir, "opencode")
+    const file = path.join(dir, "opencode.json")
+    // 生成文件可能含明文 API key，目录与文件都必须仅属主可读写。
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    writeFileSync(file, `${JSON.stringify(buildOpenCodeProviderConfig(config.model), null, 2)}\n`, { mode: 0o600 })
+    return { env: { OPENCODE_CONFIG: file }, files: [file] }
+  }
+  if (engineId === "omp") {
+    const dir = path.join(stateDir, "omp", "agent")
+    const file = path.join(dir, "models.yml")
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    writeFileSync(file, buildOmpModelsYaml(config.model), { mode: 0o600 })
+    // OMP 配置根 = join(homedir(), PI_CONFIG_DIR)，生成文件在其 agent/ 子目录，故相对名需含 /omp。
+    return { env: { PI_CONFIG_DIR: `${ompConfigDirName(stateDir)}/omp` }, files: [file] }
+  }
+  if (engineId === "pi") {
+    const dir = path.join(stateDir, "pi", "agent")
+    const file = path.join(dir, "models.json")
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    writeFileSync(file, `${JSON.stringify(buildPiModelsJson(config.model), null, 2)}\n`, { mode: 0o600 })
+    return { env: { PI_CODING_AGENT_DIR: dir }, files: [file] }
+  }
+  throw new Error(`provisionEngineConfig: unknown engine '${engineId}'`)
+}
+
+export function missingApiKeyEnvWarnings(config, environment = process.env) {
+  if (!config?.model?.providers) return []
+  const warnings = []
+  for (const [id, definition] of Object.entries(config.model.providers)) {
+    const key = apiKeyReference(definition.apiKey)
+    if (key.env && environment[key.env] === undefined) {
+      warnings.push(`model.providers.${id}.apiKey references unset environment variable ${key.env}; the engine will fail auth until it is set`)
+    }
+  }
+  return warnings
+}
+
+export function resolveEngineCommand(engineId, config, environment = process.env, { existsSync = fs.existsSync } = {}) {
+  const engine = config?.engines?.[engineId]
+  if (!engine?.command) return null
+  const command = engine.command // validateGatewayConfig 已做 ~ 展开
+  if (path.isAbsolute(command) && !existsSync(command)) {
+    throw new Error(`engines.${engineId}.command not found: ${command}`)
+  }
+  const userArgs = Array.isArray(engine.args) ? engine.args : []
+  const args = engineId === "omp" ? [...userArgs, "acp"] : userArgs
+  return { command, args }
+}
+
+export function assembleGatewayRuntime(options, config, environment = process.env, { stateDir = resolveStateDir(environment), provision = provisionEngineConfig } = {}) {
+  if (!config) return { engineOptions: {} }
+  const provisioned = provision(options.engine, config, { stateDir })
+  const override = resolveEngineCommand(options.engine, config, environment)
+  const engineOptions = { ...(override ?? {}), ...(Object.keys(provisioned.env).length > 0 ? { env: provisioned.env } : {}) }
+  let defaultModel
+  if (!options.defaultModelExplicit) {
+    const configured = config.engines?.[options.engine]?.model ?? config.model?.default
+    if (configured) defaultModel = configured
+  }
+  return { engineOptions, defaultModel }
+}

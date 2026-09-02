@@ -7,7 +7,8 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { mkdtemp } from "node:fs/promises"
 import { FakeOmpAcp } from "./helpers/fake-omp-acp.js"
-import { createAcpEngine, permissionDecision } from "../src/gateway/engines/acp-engine.js"
+import { createAcpEngine, permissionDecision, redirectProfile } from "../src/gateway/engines/acp-engine.js"
+import { HARNESS_PROFILES } from "../src/harness-profiles.js"
 
 async function acpFixture() {
   const root = await mkdtemp(path.join(tmpdir(), "gateway-acp-"))
@@ -155,4 +156,49 @@ test("a turn that failed without any reply still rejects", async () => {
   }
   const engine = createAcpEngine({ profileId: "omp", acp: acpStub, service: serviceStub })
   await assert.rejects(() => engine.prompt("s1", { text: "hi" }), /provider error/)
+})
+
+function fakeAcpChild() {
+  const child = new EventEmitter()
+  child.stdout = new EventEmitter()
+  child.stderr = new EventEmitter()
+  child.stdout.setEncoding = () => {}
+  child.stderr.setEncoding = () => {}
+  child.kill = () => true
+  return child
+}
+
+test("redirectProfile moves omp journals and undo-redo runtime under PI_CONFIG_DIR", () => {
+  const redirected = redirectProfile(HARNESS_PROFILES.omp, { PI_CONFIG_DIR: ".multi-agentengine-gateway/omp" })
+  assert.notEqual(redirected, HARNESS_PROFILES.omp)
+  assert.notEqual(redirected.historyLoader, HARNESS_PROFILES.omp.historyLoader)
+  assert.equal(redirected.actionProviders.length, HARNESS_PROFILES.omp.actionProviders.length)
+})
+
+test("redirectProfile moves pi sessions under PI_CODING_AGENT_DIR", () => {
+  const redirected = redirectProfile(HARNESS_PROFILES.pi, { PI_CODING_AGENT_DIR: "/tmp/gw/pi/agent" })
+  assert.ok(redirected.historyLoader)
+  assert.equal(redirected.actionProviders, HARNESS_PROFILES.pi.actionProviders)
+})
+
+test("redirectProfile returns the profile untouched without matching env", () => {
+  assert.equal(redirectProfile(HARNESS_PROFILES.omp, {}), HARNESS_PROFILES.omp)
+  assert.equal(redirectProfile(HARNESS_PROFILES.pi, { PI_CONFIG_DIR: "x" }), HARNESS_PROFILES.pi)
+})
+
+test("engine passes command override and env injection into the spawned adapter", async () => {
+  const spawns = []
+  const engine = createAcpEngine({
+    profileId: "pi",
+    command: "/usr/local/bin/pi-acp",
+    args: [],
+    env: { PI_CODING_AGENT_DIR: "/tmp/gw/pi/agent" },
+    spawnProcess: (command, args, options) => { spawns.push({ command, args, options }); return fakeAcpChild() }
+  })
+  await assert.rejects(() => engine.initialize())
+  const spawn = spawns.at(-1)
+  assert.equal(spawn.command, "/usr/local/bin/pi-acp")
+  assert.deepEqual(spawn.args, [])
+  assert.equal(spawn.options.env.PI_CODING_AGENT_DIR, "/tmp/gw/pi/agent")
+  assert.ok(spawn.options.env.PATH !== undefined || Object.keys(spawn.options.env).length > 1)
 })
