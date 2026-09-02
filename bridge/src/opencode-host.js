@@ -101,6 +101,7 @@ function forwardStderrLines(child, emitLine) {
 export class ManagedOpenCodeHost extends EventEmitter {
   constructor({
     command = "opencode",
+    extraArgs = [],
     host = "127.0.0.1",
     port = 4096,
     username,
@@ -115,6 +116,7 @@ export class ManagedOpenCodeHost extends EventEmitter {
   } = {}) {
     super()
     this.command = command
+    this.extraArgs = extraArgs
     this.host = host
     this.port = port
     this.username = username
@@ -163,7 +165,7 @@ export class ManagedOpenCodeHost extends EventEmitter {
   async #start() {
     const invocation = openCodeSpawnInvocation(
       this.command,
-      ["serve", "--hostname", this.host, "--port", String(this.port)],
+      ["serve", "--hostname", this.host, "--port", String(this.port), ...this.extraArgs],
       this.platform,
       this.environment
     )
