@@ -4,23 +4,32 @@
 // the profile is the only difference. ACP asks no questions, and its permissions are parked on
 // the gateway's interaction queue: the request stays open until the judge replies over HTTP.
 import path from "node:path"
+import { homedir } from "node:os"
 import { AcpClient } from "../../acp-client.js"
 import { AcpService } from "../../acp-service.js"
 import { harnessProfile, resolveAcpLaunch } from "../../harness-profiles.js"
+import { createOmpHistoryLoader } from "../../omp-session-history.js"
+import { createPiHistoryLoader } from "../../pi-session-history.js"
+import { createOmpUndoRedoActionStateLoader } from "../../omp-extension-action-state.js"
+import { OMP_EXTENSION_ACTION_PROVIDERS } from "../../extension-actions.js"
 import { normalizeAcpMessages } from "./normalize-acp.js"
 
 const ACP_CAPABILITIES = { questions: false, permissions: true, abort: true }
 
 export function createAcpEngine({
   profileId,
+  command,
+  args,
+  env,
   acp,
   service,
   stateDirectory,
   spawnProcess,
   permissionBridge
 } = {}) {
-  const profile = harnessProfile(profileId)
-  const launch = resolveAcpLaunch(profile)
+  const baseProfile = harnessProfile(profileId)
+  const profile = redirectProfile(baseProfile, env)
+  const launch = command ? { command, args: args ?? [] } : resolveAcpLaunch(baseProfile)
   const listeners = new Set()
   const seenParts = new Map() // `${sessionID}:${messageID}` → JSON of last-seen normalized parts
   const sessionStatuses = new Map() // sessionID → "idle" | "busy" (sessions this engine reported)
@@ -41,6 +50,7 @@ export function createAcpEngine({
     args: launch.args,
     permissionMode: profile.permissionMode,
     preferredAuthMethod: profile.authMethod,
+    ...(env ? { env } : {}),
     ...(spawnProcess ? { spawnProcess } : {}),
     // Park every permission ask on the gateway queue; the judge replies over HTTP.
     permissionHandler: async ({ sessionId, options }) => {
@@ -205,4 +215,28 @@ export function permissionDecision({ reply }, options = []) {
   const wanted = reply === "once" ? "allow_once" : reply === "always" ? "allow_always" : "reject"
   const option = options.find((candidate) => candidate?.kind === wanted)
   return option?.optionId ? { optionId: option.optionId } : null
+}
+
+// 注入 env 只作用于引擎子进程；OMP/PI 的 journal 与 undo-redo 状态目录由引擎跟随
+// PI_CONFIG_DIR / PI_CODING_AGENT_DIR 重定向，网关读取路径必须与子进程写入路径一致。
+export function redirectProfile(profile, env) {
+  if (!env) return profile
+  if (profile.id === "omp" && env.PI_CONFIG_DIR) {
+    const root = path.join(homedir(), env.PI_CONFIG_DIR)
+    return {
+      ...profile,
+      historyLoader: createOmpHistoryLoader(path.join(root, "agent", "sessions")),
+      actionProviders: OMP_EXTENSION_ACTION_PROVIDERS.map((provider) => ({
+        ...provider,
+        loadState: createOmpUndoRedoActionStateLoader({ runtimeRoot: path.join(root, "omp-undo-redo", "runtime") })
+      }))
+    }
+  }
+  if (profile.id === "pi" && env.PI_CODING_AGENT_DIR) {
+    return {
+      ...profile,
+      historyLoader: createPiHistoryLoader(path.join(env.PI_CODING_AGENT_DIR, "sessions"))
+    }
+  }
+  return profile
 }

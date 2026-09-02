@@ -39,7 +39,13 @@ test("engine adapters stay inside the engines directory for bridge imports", () 
     "../../opencode-host.js",
     "../../acp-client.js",
     "../../acp-service.js",
-    "../../harness-profiles.js"
+    "../../harness-profiles.js",
+    // ACP profile redirection rebuilds journal history loaders and extension action state from
+    // the bridge's own factories, so those drivers are documented dependencies of the engine.
+    "../../omp-session-history.js",
+    "../../pi-session-history.js",
+    "../../omp-extension-action-state.js",
+    "../../extension-actions.js"
   ])
   for (const entry of readdirSync(enginesRoot, { withFileTypes: true })) {
     if (!entry.isFile() || !entry.name.endsWith(".js")) continue
