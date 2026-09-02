@@ -1,0 +1,20 @@
+{
+  "name": "multi-agent-engine-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "多引擎可替换 Agent 网关（OpenCode / OMP / PI），实现赛题《Agent 网关接口规范》全部 14 端点 + SSE 事件流",
+  "bin": {
+    "harness-gateway": "./bridge/src/gateway/main.js"
+  },
+  "scripts": {
+    "start": "node bridge/src/gateway/main.js",
+    "test": "cd bridge && node --test",
+    "rehearsal": "node bridge/scripts/gateway-rehearsal.mjs --url http://localhost:6217",
+    "package": "node bridge/scripts/package-solution.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "Apache-2.0"
+}

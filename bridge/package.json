@@ -1,0 +1,15 @@
+{
+  "name": "multi-agent-engine-gateway-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "harness-gateway": "./src/gateway/main.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
