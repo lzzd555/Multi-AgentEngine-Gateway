@@ -817,16 +817,16 @@ git commit -m "feat: --config 启动接线与模型/命令优先级组装"
 
 ---
 
-### Task 4: OpenCode 链路注入（host `extraArgs` + engine `environment` 透传）
+### Task 4: OpenCode 链路注入（host `extraArgs` + engine `args`/`env` 透传）
 
 **Files:**
 - Modify: `bridge/src/opencode-host.js`（构造参数 `extraArgs`，spawn args 追加）
-- Modify: `bridge/src/gateway/engines/opencode-engine.js`（透传 `environment`/`extraArgs`/`spawnProcess` 给 host）
+- Modify: `bridge/src/gateway/engines/opencode-engine.js`（按 engineOptions 同名键接收 `args`/`env`/`spawnProcess`/`waitUntilReady`，内部映射给 host）
 - Test: `bridge/test/gateway-opencode-engine.test.js`（追加）
 
 **Interfaces:**
 - Consumes: Task 3 的 `engineOptions`（`{ command?, args?, env? }`，其中 `env.OPENCODE_CONFIG` 已生成）。
-- Produces: `ManagedOpenCodeHost` 构造新增 `extraArgs = []`（追加在 `serve --hostname <h> --port <p>` 之后）；`createOpenCodeEngine` 构造新增 `environment`（默认 `process.env`，作为 host spawn env 基底）与 `extraArgs = []`、`spawnProcess`（测试注入）。
+- Produces: `ManagedOpenCodeHost` 构造新增 `extraArgs = []`（追加在 `serve --hostname <h> --port <p>` 之后）；`createOpenCodeEngine` 构造新增 `args = []`（透传为 host `extraArgs`）与 `env = {}`（合并到 `process.env` 之上作为 host spawn 的 `environment`，注入 env 只作用于引擎子进程）、`spawnProcess`/`waitUntilReady`（测试注入）。两个引擎对 engineOptions 的消费键名保持一致：`command`/`args`/`env`。
 
 - [ ] **Step 1: Write the failing test**
 
@@ -844,12 +844,12 @@ function fakeChild() {
   return child
 }
 
-test("engine injects environment and extraArgs into the managed host spawn", async () => {
+test("engine injects env and args into the managed host spawn", async () => {
   const spawns = []
   const engine = createOpenCodeEngine({
     command: "/opt/opencode/bin/opencode",
-    extraArgs: ["--flag"],
-    environment: { PATH: "/usr/bin", OPENCODE_CONFIG: "/tmp/generated/opencode.json" },
+    args: ["--flag"],
+    env: { OPENCODE_CONFIG: "/tmp/generated/opencode.json" },
     spawnProcess: (command, args, options) => { spawns.push({ command, args, options }); return fakeChild() },
     startTimeoutMs: 5,
     waitUntilReady: async () => {}
@@ -859,7 +859,8 @@ test("engine injects environment and extraArgs into the managed host spawn", asy
   assert.equal(spawn.command, "/opt/opencode/bin/opencode")
   assert.deepEqual(spawn.args, ["serve", "--hostname", "127.0.0.1", "--port", "14096", "--flag"])
   assert.equal(spawn.options.env.OPENCODE_CONFIG, "/tmp/generated/opencode.json")
-  assert.equal(spawn.options.env.PATH, "/usr/bin")
+  // env 是叠加在 process.env 之上，而非整体替换
+  assert.equal(spawn.options.env.PATH, process.env.PATH)
   await engine.dispose()
 })
 ```
@@ -869,7 +870,7 @@ test("engine injects environment and extraArgs into the managed host spawn", asy
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `cd bridge && node --test test/gateway-opencode-engine.test.js`
-Expected: FAIL — `extraArgs`/`environment` 未透传（spawn args 无 `--flag` 或 env 无 `OPENCODE_CONFIG`）
+Expected: FAIL — `args`/`env` 未透传（spawn args 无 `--flag` 或 env 无 `OPENCODE_CONFIG`）
 
 - [ ] **Step 3: Implement**
 
@@ -884,12 +885,13 @@ Expected: FAIL — `extraArgs`/`environment` 未透传（spawn args 无 `--flag`
     )
 ```
 
-`opencode-engine.js` 构造参数追加 `environment = process.env, extraArgs = [], spawnProcess, waitUntilReady`；`initialize` 中 host 实例化改为：
+`opencode-engine.js` 构造参数追加 `args = [], env = {}, spawnProcess, waitUntilReady`；`initialize` 中 host 实例化改为：
 
 ```js
         managedHost = new ManagedOpenCodeHost({
           command, host, port: upstreamPort, username, password, startTimeoutMs,
-          environment, extraArgs,
+          environment: { ...process.env, ...env },
+          extraArgs: args,
           ...(spawnProcess ? { spawnProcess } : {}),
           ...(waitUntilReady ? { waitUntilReady } : {})
         })
@@ -948,8 +950,7 @@ function fakeAcpChild() {
 test("redirectProfile moves omp journals and undo-redo runtime under PI_CONFIG_DIR", () => {
   const redirected = redirectProfile(HARNESS_PROFILES.omp, { PI_CONFIG_DIR: ".multi-agentengine-gateway/omp" })
   assert.notEqual(redirected, HARNESS_PROFILES.omp)
-  assert.equal(redirected.historyLoader, undefined ? undefined : redirected.historyLoader)
-  assert.ok(redirected.historyLoader)
+  assert.notEqual(redirected.historyLoader, HARNESS_PROFILES.omp.historyLoader)
   assert.equal(redirected.actionProviders.length, HARNESS_PROFILES.omp.actionProviders.length)
 })
 
