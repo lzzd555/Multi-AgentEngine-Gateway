@@ -110,6 +110,7 @@ export function validateGatewayConfig(parsed, sourcePath) {
   let defaultModel
   if (providerEntries.length > 0) {
     if (typeof modelSection.default !== "string") throw new Error(`${sourcePath}: model.default is required when model.providers is set`)
+    if (!WIRE_MODEL_PATTERN.test(modelSection.default)) throw new Error(`${sourcePath}: model.default must look like providerID/modelID`)
     const [providerID, modelID] = modelSection.default.split("/")
     if (!providers[providerID]?.models[modelID]) {
       throw new Error(`${sourcePath}: model.default '${modelSection.default}' resolves to no defined provider/model`)
@@ -155,7 +156,10 @@ export function buildOpenCodeProviderConfig(model) {
 // OMP models.yml 是固定两层结构；网关零依赖，不引 YAML 库，这里手写最小序列化。
 function yamlScalar(value) {
   const text = String(value)
-  return /^[A-Za-z0-9._~:/$-]+$/.test(text) ? text : JSON.stringify(text)
+  if (!/^[A-Za-z0-9._~:/$-]+$/.test(text)) return JSON.stringify(text)
+  // YAML 1.1 会把裸的 true/false/null/yes/no/on/off/~/- 与纯数字强转为布尔/空/数值，这些词必须加引号保字符串。
+  if (/^(?:true|false|null|yes|no|on|off|~|-)?$/i.test(text) || /^[-+.]?[0-9][0-9_.eE+-]*$/.test(text)) return JSON.stringify(text)
+  return text
 }
 
 export function buildOmpModelsYaml(model) {
@@ -205,23 +209,24 @@ export function provisionEngineConfig(engineId, config, { stateDir = resolveStat
   if (engineId === "opencode") {
     const dir = path.join(stateDir, "opencode")
     const file = path.join(dir, "opencode.json")
-    mkdirSync(dir, { recursive: true })
-    writeFileSync(file, `${JSON.stringify(buildOpenCodeProviderConfig(config.model), null, 2)}\n`)
+    // 生成文件可能含明文 API key，目录与文件都必须仅属主可读写。
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    writeFileSync(file, `${JSON.stringify(buildOpenCodeProviderConfig(config.model), null, 2)}\n`, { mode: 0o600 })
     return { env: { OPENCODE_CONFIG: file }, files: [file] }
   }
   if (engineId === "omp") {
     const dir = path.join(stateDir, "omp", "agent")
     const file = path.join(dir, "models.yml")
-    mkdirSync(dir, { recursive: true })
-    writeFileSync(file, buildOmpModelsYaml(config.model))
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    writeFileSync(file, buildOmpModelsYaml(config.model), { mode: 0o600 })
     // OMP 配置根 = join(homedir(), PI_CONFIG_DIR)，生成文件在其 agent/ 子目录，故相对名需含 /omp。
     return { env: { PI_CONFIG_DIR: `${ompConfigDirName(stateDir)}/omp` }, files: [file] }
   }
   if (engineId === "pi") {
     const dir = path.join(stateDir, "pi", "agent")
     const file = path.join(dir, "models.json")
-    mkdirSync(dir, { recursive: true })
-    writeFileSync(file, `${JSON.stringify(buildPiModelsJson(config.model), null, 2)}\n`)
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    writeFileSync(file, `${JSON.stringify(buildPiModelsJson(config.model), null, 2)}\n`, { mode: 0o600 })
     return { env: { PI_CODING_AGENT_DIR: dir }, files: [file] }
   }
   throw new Error(`provisionEngineConfig: unknown engine '${engineId}'`)

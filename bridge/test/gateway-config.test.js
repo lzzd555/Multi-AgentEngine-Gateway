@@ -104,7 +104,8 @@ test("validation failures are specific", () => {
     [{ ...VALID, model: { providers: { "Bad_Id": VALID.model.providers.zaicoding }, default: "Bad_Id/glm-5.2" } }, /provider id .* must match/],
     [{ ...VALID, engines: { turbo: {} } }, /Unknown engine/],
     [{ ...VALID, engines: { omp: { args: "acp" } } }, /args must be an array of strings/],
-    [{ ...VALID, engines: { omp: { model: "no-slash" } } }, /must look like providerID\/modelID/]
+    [{ ...VALID, engines: { omp: { model: "no-slash" } } }, /must look like providerID\/modelID/],
+    [{ ...VALID, model: { ...VALID.model, default: "zaicoding/glm-5.2/extra" } }, /model\.default must look like providerID\/modelID/]
   ]
   for (const [config, pattern] of cases) {
     withTempConfig(config, (file) => {
@@ -199,6 +200,22 @@ test("plaintext api keys pass through to every engine file", () => {
   }
 })
 
+test("generated engine config files are private (0600)", () => {
+  const config = { model: MODEL, engines: {} }
+  const stateDir = fs.mkdtempSync(path.join(os.homedir(), ".gwprov-mode-"))
+  try {
+    for (const engineId of ["opencode", "omp", "pi"]) {
+      const { files } = provisionEngineConfig(engineId, config, { stateDir })
+      assert.equal(files.length, 1)
+      for (const file of files) {
+        assert.equal(fs.statSync(file).mode & 0o777, 0o600, `${engineId} config ${file}`)
+      }
+    }
+  } finally {
+    fs.rmSync(stateDir, { recursive: true, force: true })
+  }
+})
+
 test("provision is idempotent and rewrites files", () => {
   const config = { model: MODEL, engines: {} }
   const stateDir = fs.mkdtempSync(path.join(os.homedir(), ".gwprov-test-"))
@@ -231,6 +248,16 @@ test("yaml scalar quoting escapes values with specials", () => {
   const yaml = buildOmpModelsYaml({ providers: { p: { baseUrl: "https://x/y?a=b c", apiKey: "k", api: "openai-completions", models: { m1: { name: "Model: #1" } } } } })
   assert.match(yaml, /baseUrl: "https:\/\/x\/y\?a=b c"/)
   assert.match(yaml, /name: "Model: #1"/)
+})
+
+test("yaml scalar quoting escapes YAML-coercible bare words", () => {
+  const yaml = buildOmpModelsYaml({ providers: { p: { baseUrl: "https://x/y", apiKey: "1234567890", api: "openai-completions", models: { "3.5": { name: "3.5" }, yes: { name: "true" } } } } })
+  assert.match(yaml, /apiKey: "1234567890"/)
+  assert.match(yaml, /name: "3\.5"/)
+  assert.match(yaml, /- id: "3\.5"/)
+  assert.match(yaml, /name: "true"/)
+  assert.match(yaml, /- id: "yes"/)
+  assert.doesNotMatch(yaml, /apiKey: 1234567890/)
 })
 
 test("missingApiKeyEnvWarnings lists unset referenced variables", () => {

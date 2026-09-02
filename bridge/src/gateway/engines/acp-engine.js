@@ -219,6 +219,8 @@ export function permissionDecision({ reply }, options = []) {
 
 // 注入 env 只作用于引擎子进程；OMP/PI 的 journal 与 undo-redo 状态目录由引擎跟随
 // PI_CONFIG_DIR / PI_CODING_AGENT_DIR 重定向，网关读取路径必须与子进程写入路径一致。
+// PI_CODING_AGENT_SESSION_DIR 是 PI 专属 session 变量，OMP 不消费，故此处有意不读取；
+// loadState 覆盖把重建的 undo-redo loader 应用到每个 OMP provider——对当前单一 provider 列表正确。
 export function redirectProfile(profile, env) {
   if (!env) return profile
   if (profile.id === "omp" && env.PI_CONFIG_DIR) {
