@@ -4,7 +4,16 @@ import assert from "node:assert/strict"
 import fs from "node:fs"
 import path from "node:path"
 import os from "node:os"
-import { loadGatewayConfig, expandHome } from "../src/gateway/gateway-config.js"
+import {
+  loadGatewayConfig,
+  expandHome,
+  provisionEngineConfig,
+  resolveStateDir,
+  buildOmpModelsYaml,
+  buildPiModelsJson,
+  buildOpenCodeProviderConfig,
+  missingApiKeyEnvWarnings
+} from "../src/gateway/gateway-config.js"
 
 const VALID = {
   model: {
@@ -128,4 +137,109 @@ test("empty providers config loads without default", () => {
     assert.deepEqual(loaded.model.providers, {})
     assert.equal(loaded.model.default, undefined)
   })
+})
+
+const MODEL = {
+  providers: {
+    zaicoding: {
+      baseUrl: "https://api.z.ai/api/coding/paas/v4",
+      apiKey: "{env:ZAI_API_KEY}",
+      api: "openai-completions",
+      models: { "glm-5.2": { name: "GLM 5.2" } }
+    }
+  },
+  default: "zaicoding/glm-5.2"
+}
+
+// OMP 的 PI_CONFIG_DIR 是 home 下的相对目录名，provision 测试的 stateDir 必须建在 home 下。
+function relativeName(dir) {
+  return path.relative(os.homedir(), dir).split(path.sep).join("/")
+}
+
+test("api key references expand per engine", () => {
+  const config = { model: MODEL, engines: {} }
+  const stateDir = fs.mkdtempSync(path.join(os.homedir(), ".gwprov-test-"))
+  try {
+    const oc = provisionEngineConfig("opencode", config, { stateDir })
+    assert.equal(oc.env.OPENCODE_CONFIG, path.join(stateDir, "opencode", "opencode.json"))
+    const written = JSON.parse(fs.readFileSync(oc.env.OPENCODE_CONFIG, "utf8"))
+    assert.equal(written.provider.zaicoding.options.apiKey, "{env:ZAI_API_KEY}")
+    assert.equal(written.provider.zaicoding.options.baseURL, "https://api.z.ai/api/coding/paas/v4")
+    assert.equal(written.provider.zaicoding.models["glm-5.2"].name, "GLM 5.2")
+
+    const omp = provisionEngineConfig("omp", config, { stateDir })
+    assert.equal(omp.env.PI_CONFIG_DIR, `${relativeName(stateDir)}/omp`)
+    const ompYaml = fs.readFileSync(omp.files[0], "utf8")
+    assert.match(ompYaml, /baseUrl: https:\/\/api\.z\.ai\/api\/coding\/paas\/v4/)
+    assert.match(ompYaml, /apiKey: ZAI_API_KEY/)
+    assert.match(ompYaml, /- id: glm-5\.2/)
+    assert.match(ompYaml, /name: "GLM 5\.2"/)
+
+    const pi = provisionEngineConfig("pi", config, { stateDir })
+    assert.equal(pi.env.PI_CODING_AGENT_DIR, path.join(stateDir, "pi", "agent"))
+    const piJson = JSON.parse(fs.readFileSync(pi.files[0], "utf8"))
+    assert.equal(piJson.providers.zaicoding.apiKey, "$ZAI_API_KEY")
+    assert.equal(piJson.providers.zaicoding.api, "openai-completions")
+  } finally {
+    fs.rmSync(stateDir, { recursive: true, force: true })
+  }
+})
+
+test("plaintext api keys pass through to every engine file", () => {
+  const config = { model: { ...MODEL, providers: { zaicoding: { ...MODEL.providers.zaicoding, apiKey: "sk-literal" } } }, engines: {} }
+  const stateDir = fs.mkdtempSync(path.join(os.homedir(), ".gwprov-test-"))
+  try {
+    assert.match(fs.readFileSync(provisionEngineConfig("omp", config, { stateDir }).files[0], "utf8"), /apiKey: sk-literal/)
+    assert.equal(JSON.parse(fs.readFileSync(provisionEngineConfig("pi", config, { stateDir }).files[0], "utf8")).providers.zaicoding.apiKey, "sk-literal")
+    assert.equal(JSON.parse(fs.readFileSync(provisionEngineConfig("opencode", config, { stateDir }).files[0], "utf8")).provider.zaicoding.options.apiKey, "sk-literal")
+  } finally {
+    fs.rmSync(stateDir, { recursive: true, force: true })
+  }
+})
+
+test("provision is idempotent and rewrites files", () => {
+  const config = { model: MODEL, engines: {} }
+  const stateDir = fs.mkdtempSync(path.join(os.homedir(), ".gwprov-test-"))
+  try {
+    provisionEngineConfig("opencode", config, { stateDir })
+    const first = fs.readFileSync(path.join(stateDir, "opencode", "opencode.json"), "utf8")
+    provisionEngineConfig("opencode", config, { stateDir })
+    assert.equal(fs.readFileSync(path.join(stateDir, "opencode", "opencode.json"), "utf8"), first)
+  } finally {
+    fs.rmSync(stateDir, { recursive: true, force: true })
+  }
+})
+
+test("empty providers provision is a no-op", () => {
+  const config = { model: { providers: {} }, engines: {} }
+  assert.deepEqual(provisionEngineConfig("omp", config, { stateDir: "/tmp/x" }), { env: {}, files: [] })
+})
+
+test("omp rejects a stateDir outside home (PI_CONFIG_DIR is home-relative)", () => {
+  const config = { model: MODEL, engines: {} }
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "gwout-"))
+  try {
+    assert.throws(() => provisionEngineConfig("omp", config, { stateDir: outside }), /must live under the home directory/)
+  } finally {
+    fs.rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+test("yaml scalar quoting escapes values with specials", () => {
+  const yaml = buildOmpModelsYaml({ providers: { p: { baseUrl: "https://x/y?a=b c", apiKey: "k", api: "openai-completions", models: { m1: { name: "Model: #1" } } } } })
+  assert.match(yaml, /baseUrl: "https:\/\/x\/y\?a=b c"/)
+  assert.match(yaml, /name: "Model: #1"/)
+})
+
+test("missingApiKeyEnvWarnings lists unset referenced variables", () => {
+  const config = { model: MODEL, engines: {} }
+  assert.deepEqual(missingApiKeyEnvWarnings(config, { ZAI_API_KEY: "x" }), [])
+  const warnings = missingApiKeyEnvWarnings(config, {})
+  assert.equal(warnings.length, 1)
+  assert.match(warnings[0], /ZAI_API_KEY/)
+})
+
+test("resolveStateDir honors GATEWAY_STATE_DIR with ~ expansion", () => {
+  assert.equal(resolveStateDir({ GATEWAY_STATE_DIR: "~/gwstate" }), path.join(os.homedir(), "gwstate"))
+  assert.equal(resolveStateDir({}), path.join(os.homedir(), ".multi-agentengine-gateway"))
 })

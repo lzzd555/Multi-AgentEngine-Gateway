@@ -129,3 +129,112 @@ export function loadGatewayConfig({ configPath, environment = process.env, cwd =
   const validated = validateGatewayConfig(readFile(file), file)
   return { path: file, ...validated }
 }
+
+export function resolveStateDir(environment = process.env) {
+  return expandHome(environment.GATEWAY_STATE_DIR ?? path.join(homedir(), DEFAULT_STATE_DIRNAME))
+}
+
+export function apiKeyReference(apiKey) {
+  const match = /^\{env:([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(apiKey)
+  return match ? { env: match[1] } : { literal: apiKey }
+}
+
+export function buildOpenCodeProviderConfig(model) {
+  const provider = {}
+  for (const [id, definition] of Object.entries(model.providers)) {
+    provider[id] = {
+      npm: "@ai-sdk/openai-compatible",
+      name: id,
+      options: { baseURL: definition.baseUrl, apiKey: definition.apiKey },
+      models: Object.fromEntries(Object.entries(definition.models).map(([mid, meta]) => [mid, { name: meta.name }]))
+    }
+  }
+  return { provider }
+}
+
+// OMP models.yml 是固定两层结构；网关零依赖，不引 YAML 库，这里手写最小序列化。
+function yamlScalar(value) {
+  const text = String(value)
+  return /^[A-Za-z0-9._~:/$-]+$/.test(text) ? text : JSON.stringify(text)
+}
+
+export function buildOmpModelsYaml(model) {
+  const lines = ["providers:"]
+  for (const [id, definition] of Object.entries(model.providers)) {
+    const key = apiKeyReference(definition.apiKey)
+    lines.push(`  ${id}:`)
+    lines.push(`    baseUrl: ${yamlScalar(definition.baseUrl)}`)
+    lines.push(`    api: ${yamlScalar(definition.api)}`)
+    lines.push(`    apiKey: ${yamlScalar(key.env ?? key.literal)}`)
+    lines.push("    models:")
+    for (const [mid, meta] of Object.entries(definition.models)) {
+      lines.push(`      - id: ${yamlScalar(mid)}`)
+      lines.push(`        name: ${yamlScalar(meta.name)}`)
+    }
+  }
+  return `${lines.join("\n")}\n`
+}
+
+export function buildPiModelsJson(model) {
+  const providers = {}
+  for (const [id, definition] of Object.entries(model.providers)) {
+    const key = apiKeyReference(definition.apiKey)
+    providers[id] = {
+      baseUrl: definition.baseUrl,
+      api: definition.api,
+      apiKey: key.env ? `$${key.env}` : key.literal,
+      models: Object.entries(definition.models).map(([mid, meta]) => ({ id: mid, name: meta.name }))
+    }
+  }
+  return { providers }
+}
+
+// OMP 的 PI_CONFIG_DIR 语义是 home 下的相对目录名（path.join(homedir(), value)），
+// 绝对路径会被拼坏，因此 stateDir 必须位于 home 之下（规格 §3）。
+function ompConfigDirName(stateDir, home = homedir()) {
+  const relative = path.relative(home, stateDir)
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`GATEWAY_STATE_DIR must live under the home directory for the OMP engine (PI_CONFIG_DIR is a home-relative name); got ${stateDir}`)
+  }
+  return relative.split(path.sep).join("/")
+}
+
+export function provisionEngineConfig(engineId, config, { stateDir = resolveStateDir(), mkdirSync = fs.mkdirSync, writeFileSync = fs.writeFileSync } = {}) {
+  const providers = config?.model?.providers
+  if (!providers || Object.keys(providers).length === 0) return { env: {}, files: [] }
+  if (engineId === "opencode") {
+    const dir = path.join(stateDir, "opencode")
+    const file = path.join(dir, "opencode.json")
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(file, `${JSON.stringify(buildOpenCodeProviderConfig(config.model), null, 2)}\n`)
+    return { env: { OPENCODE_CONFIG: file }, files: [file] }
+  }
+  if (engineId === "omp") {
+    const dir = path.join(stateDir, "omp", "agent")
+    const file = path.join(dir, "models.yml")
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(file, buildOmpModelsYaml(config.model))
+    // OMP 配置根 = join(homedir(), PI_CONFIG_DIR)，生成文件在其 agent/ 子目录，故相对名需含 /omp。
+    return { env: { PI_CONFIG_DIR: `${ompConfigDirName(stateDir)}/omp` }, files: [file] }
+  }
+  if (engineId === "pi") {
+    const dir = path.join(stateDir, "pi", "agent")
+    const file = path.join(dir, "models.json")
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(file, `${JSON.stringify(buildPiModelsJson(config.model), null, 2)}\n`)
+    return { env: { PI_CODING_AGENT_DIR: dir }, files: [file] }
+  }
+  throw new Error(`provisionEngineConfig: unknown engine '${engineId}'`)
+}
+
+export function missingApiKeyEnvWarnings(config, environment = process.env) {
+  if (!config?.model?.providers) return []
+  const warnings = []
+  for (const [id, definition] of Object.entries(config.model.providers)) {
+    const key = apiKeyReference(definition.apiKey)
+    if (key.env && environment[key.env] === undefined) {
+      warnings.push(`model.providers.${id}.apiKey references unset environment variable ${key.env}; the engine will fail auth until it is set`)
+    }
+  }
+  return warnings
+}
