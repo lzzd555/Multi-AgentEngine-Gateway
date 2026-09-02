@@ -1,5 +1,5 @@
 // bridge/test/gateway-config.test.js
-import { test } from "node:test"
+import { test, after } from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
 import path from "node:path"
@@ -12,7 +12,9 @@ import {
   buildOmpModelsYaml,
   buildPiModelsJson,
   buildOpenCodeProviderConfig,
-  missingApiKeyEnvWarnings
+  missingApiKeyEnvWarnings,
+  resolveEngineCommand,
+  assembleGatewayRuntime
 } from "../src/gateway/gateway-config.js"
 
 const VALID = {
@@ -242,4 +244,82 @@ test("missingApiKeyEnvWarnings lists unset referenced variables", () => {
 test("resolveStateDir honors GATEWAY_STATE_DIR with ~ expansion", () => {
   assert.equal(resolveStateDir({ GATEWAY_STATE_DIR: "~/gwstate" }), path.join(os.homedir(), "gwstate"))
   assert.equal(resolveStateDir({}), path.join(os.homedir(), ".multi-agentengine-gateway"))
+})
+
+// resolveEngineCommand 校验绝对路径 command 的存在性，测试用临时目录中的真实文件替代虚构路径。
+const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "gwcmd-"))
+const OPENCODE_BIN = path.join(binDir, "opencode")
+const PI_BIN = path.join(binDir, "pi-acp")
+const OMP_BIN = path.join(binDir, "omp")
+for (const bin of [OPENCODE_BIN, PI_BIN, OMP_BIN]) fs.writeFileSync(bin, "#!/bin/sh\n")
+after(() => fs.rmSync(binDir, { recursive: true, force: true }))
+
+const CONFIG = {
+  model: { providers: MODEL.providers, default: "zaicoding/glm-5.2" },
+  engines: {
+    opencode: { command: OPENCODE_BIN, args: ["--flag"] },
+    omp: {},
+    pi: { command: PI_BIN, model: "zaicoding/glm-5.2" }
+  }
+}
+
+test("resolveEngineCommand applies per-engine semantics", () => {
+  assert.deepEqual(resolveEngineCommand("opencode", CONFIG, {}), { command: OPENCODE_BIN, args: ["--flag"] })
+})
+
+test("resolveEngineCommand returns null without config command", () => {
+  assert.equal(resolveEngineCommand("omp", CONFIG, {}), null)
+  assert.equal(resolveEngineCommand("pi", { ...CONFIG, engines: {} }, {}), null)
+})
+
+test("resolveEngineCommand keeps omp 'acp' and replaces pi npx wrapper", () => {
+  const withOmpCommand = { ...CONFIG, engines: { omp: { command: OMP_BIN, args: ["--pre"] } } }
+  assert.deepEqual(resolveEngineCommand("omp", withOmpCommand, {}), { command: OMP_BIN, args: ["--pre", "acp"] })
+  assert.deepEqual(resolveEngineCommand("pi", CONFIG, {}), { command: PI_BIN, args: [] })
+})
+
+test("resolveEngineCommand rejects an absolute command that does not exist", () => {
+  const bad = { ...CONFIG, engines: { omp: { command: "/no/such/omp" } } }
+  assert.throws(() => resolveEngineCommand("omp", bad, {}), /not found/)
+})
+
+test("assembleGatewayRuntime provisions and resolves model priority", () => {
+  const stateDir = fs.mkdtempSync(path.join(os.homedir(), ".gwrt-"))
+  const provisioned = []
+  try {
+    const runtime = assembleGatewayRuntime(
+      { engine: "pi", defaultModel: "zai/glm-5.2", defaultModelExplicit: false },
+      CONFIG,
+      {},
+      { stateDir, provision: (engineId, config, opts) => { provisioned.push(engineId); return provisionEngineConfig(engineId, config, opts) } }
+    )
+    assert.deepEqual(provisioned, ["pi"])
+    assert.equal(runtime.engineOptions.command, PI_BIN)
+    assert.deepEqual(runtime.engineOptions.env, { PI_CODING_AGENT_DIR: path.join(stateDir, "pi", "agent") })
+    assert.equal(runtime.defaultModel, "zaicoding/glm-5.2")
+  } finally {
+    fs.rmSync(stateDir, { recursive: true, force: true })
+  }
+})
+
+test("explicit --model / GATEWAY_DEFAULT_MODEL beats config default", () => {
+  const stateDir = fs.mkdtempSync(path.join(os.homedir(), ".gwrt-"))
+  try {
+    const explicit = assembleGatewayRuntime(
+      { engine: "opencode", defaultModel: "zai/glm-5.2-air", defaultModelExplicit: true },
+      CONFIG, {}, { stateDir, provision: () => ({ env: {}, files: [] }) }
+    )
+    assert.equal(explicit.defaultModel, undefined)
+    const unset = assembleGatewayRuntime(
+      { engine: "opencode", defaultModel: "zai/glm-5.2", defaultModelExplicit: false },
+      { ...CONFIG, engines: {} }, {}, { stateDir, provision: () => ({ env: {}, files: [] }) }
+    )
+    assert.equal(unset.defaultModel, "zaicoding/glm-5.2")
+  } finally {
+    fs.rmSync(stateDir, { recursive: true, force: true })
+  }
+})
+
+test("assembleGatewayRuntime without config yields empty engineOptions", () => {
+  assert.deepEqual(assembleGatewayRuntime({ engine: "opencode" }, null, {}), { engineOptions: {} })
 })

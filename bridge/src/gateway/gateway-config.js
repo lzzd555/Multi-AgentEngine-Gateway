@@ -238,3 +238,28 @@ export function missingApiKeyEnvWarnings(config, environment = process.env) {
   }
   return warnings
 }
+
+export function resolveEngineCommand(engineId, config, environment = process.env, { existsSync = fs.existsSync } = {}) {
+  const engine = config?.engines?.[engineId]
+  if (!engine?.command) return null
+  const command = engine.command // validateGatewayConfig 已做 ~ 展开
+  if (path.isAbsolute(command) && !existsSync(command)) {
+    throw new Error(`engines.${engineId}.command not found: ${command}`)
+  }
+  const userArgs = Array.isArray(engine.args) ? engine.args : []
+  const args = engineId === "omp" ? [...userArgs, "acp"] : userArgs
+  return { command, args }
+}
+
+export function assembleGatewayRuntime(options, config, environment = process.env, { stateDir = resolveStateDir(environment), provision = provisionEngineConfig } = {}) {
+  if (!config) return { engineOptions: {} }
+  const provisioned = provision(options.engine, config, { stateDir })
+  const override = resolveEngineCommand(options.engine, config, environment)
+  const engineOptions = { ...(override ?? {}), ...(Object.keys(provisioned.env).length > 0 ? { env: provisioned.env } : {}) }
+  let defaultModel
+  if (!options.defaultModelExplicit) {
+    const configured = config.engines?.[options.engine]?.model ?? config.model?.default
+    if (configured) defaultModel = configured
+  }
+  return { engineOptions, defaultModel }
+}
