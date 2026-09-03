@@ -1,5 +1,5 @@
 {
-  "$comment": "网关统一配置示例：模型 provider + 各引擎位置。复制为 gateway.config.json 后按需修改。apiKey 支持明文或 {env:NAME} 引用。",
+  "$comment": "网关统一配置示例：模型 provider + 能力供给（skills/mcp，可选）+ 各引擎位置。复制为 gateway.config.json 后按需修改。apiKey 支持明文或 {env:NAME} 引用；skills 为技能目录（含 SKILL.md）或 SKILL.md 文件路径的数组，供给时整目录复制到所选引擎；mcp 按引擎原生形态生成（OpenCode 并入 opencode.json、OMP/PI 生成 mcpServers 结构，PI 需 npm install 装 pi-mcp-adapter）。详见 solution/config-templates/README.md。",
   "model": {
     "providers": {
       "zaicoding": {
@@ -10,6 +10,10 @@
       }
     },
     "default": "zaicoding/glm-5.2"
+  },
+  "skills": ["./skills/demo-skill"],
+  "mcp": {
+    "fetch": { "type": "local", "command": ["npx", "-y", "mcp-server-fetch"] }
   },
   "engines": {
     "opencode": {},

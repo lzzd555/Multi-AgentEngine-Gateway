@@ -13,14 +13,15 @@
 - `prompt_async` 阻塞至本轮完成；消息含 `tool_calls` / `info.finish` / `step-finish`，满足裁判完成判定
 - 引擎切换：`--engine opencode|omp|pi` 或环境变量 `AGENT_ENGINE`
 - **网关统一配置** `gateway.config.json`：模型 provider 一处声明，启动时自动生成三引擎隔离配置（发现顺序与注入细节见 solution/config-templates/README.md）
+- **能力统一供给**：`skills` / `mcp` 两段一处声明——技能整目录复制到所选引擎的隔离 skills 目录，MCP server 按各引擎原生形态写入（OpenCode 并入生成文件 / OMP `mcp.json` / PI 经 pi-mcp-adapter 装配），映射与验证状态见 solution/config-templates/README.md「能力供给」
 
 ## 快速开始
 
 ```bash
-# 1. 安装引擎（按需）并设置密钥
+# 1. 安装依赖与引擎（按需）并设置密钥
+npm install                                # 仓库可选依赖：本地化 PI（pi-acp）与 pi-mcp-adapter；未装时 PI 回落 npx 拉起（首跑较慢）
 npm install -g opencode-ai                 # OpenCode
 curl -fsSL https://omp.sh/install | sh     # OMP（注意 PATH 需含 ~/.local/bin）
-# PI 无需安装（@automatalabs/pi-acp 经 npx 拉起）
 export ZAI_API_KEY=<你的key>
 
 # 2. 复制统一配置并启动（默认端口 6217；配置详解见 solution/config-templates/README.md）
@@ -35,7 +36,7 @@ npm test                    # 规范符合性 + 单元/集成测试
 npm run package             # 生成 solution.zip
 ```
 
-启动时网关按 `gateway.config.json` 为所选 `--engine` 在 `~/.multi-agentengine-gateway/` 下自动生成隔离配置（`opencode/`、`omp/`、`pi/` 各自独立、互不覆盖），并经 `OPENCODE_CONFIG` / `PI_CONFIG_DIR` / `PI_CODING_AGENT_DIR` 注入该引擎子进程，三引擎共用同一份 provider 定义，无需手工改各引擎自己的配置文件。
+启动时网关按 `gateway.config.json` 为所选 `--engine` 在 `~/.multi-agentengine-gateway/` 下自动生成隔离配置（`opencode/`、`omp/`、`pi/` 各自独立、互不覆盖），并经 `OPENCODE_CONFIG` / `PI_CONFIG_DIR` / `PI_CODING_AGENT_DIR` 注入该引擎子进程，三引擎共用同一份 provider 定义，无需手工改各引擎自己的配置文件；配置了 `skills`/`mcp` 段时，技能目录与 MCP server 配置也一并同步到该引擎（OpenCode 的全局 skills 另经 `XDG_CONFIG_HOME` 指向隔离目录）。
 
 > 附注：引擎侧直配（可选）。不走统一配置时，可按 `solution/config-templates/README.md` 的「引擎侧直配（可选）」把 provider 配置直接并入各引擎自己的配置文件（`~/.config/opencode/opencode.json`、`~/.omp/agent/models.yml`、`~/.pi/agent/models.json`），并用 `GATEWAY_DEFAULT_MODEL=zaicoding/glm-5.2` 指定默认模型——网关未发现 `gateway.config.json`（且未传 `--config` / `GATEWAY_CONFIG`）时即走该路径。
 
