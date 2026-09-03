@@ -6,6 +6,7 @@ import path from "node:path"
 import os from "node:os"
 import { validateSkills, validateMcp, resolveRepoRoot } from "../src/gateway/gateway-capabilities.js"
 import { provisionSkills, skillTargets } from "../src/gateway/gateway-capabilities.js"
+import { buildOpenCodeMcpSection, buildMcpServersJson, provisionPiMcp, piMcpAdapterEntry } from "../src/gateway/gateway-capabilities.js"
 
 function withSkill(name, run) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gwskill-"))
@@ -126,6 +127,80 @@ test("provisionSkills copies whole skill dirs, companion files, and resyncs idem
     assert.deepEqual(provisionSkills("omp", [], { stateDir }), { files: [] })
   } finally {
     fs.rmSync(base, { recursive: true, force: true })
+    fs.rmSync(stateDir, { recursive: true, force: true })
+  }
+})
+
+const MCP = {
+  fetch: { type: "local", command: ["npx", "-y", "mcp-server-fetch"], env: { K: "V" } },
+  context7: { type: "remote", url: "https://mcp.context7.com/mcp", headers: { Auth: "B x" } }
+}
+
+test("buildOpenCodeMcpSection maps both shapes to the opencode schema", () => {
+  assert.deepEqual(buildOpenCodeMcpSection(MCP), {
+    fetch: { type: "local", command: ["npx", "-y", "mcp-server-fetch"], environment: { K: "V" } },
+    context7: { type: "remote", url: "https://mcp.context7.com/mcp", headers: { Auth: "B x" } }
+  })
+  assert.deepEqual(buildOpenCodeMcpSection({}), {})
+})
+
+test("buildMcpServersJson splits local command arrays and maps remote to http", () => {
+  assert.deepEqual(buildMcpServersJson(MCP), {
+    mcpServers: {
+      fetch: { command: "npx", args: ["-y", "mcp-server-fetch"], env: { K: "V" } },
+      context7: { type: "http", url: "https://mcp.context7.com/mcp", headers: { Auth: "B x" } }
+    }
+  })
+})
+
+test("piMcpAdapterEntry finds the installed adapter entry and misses cleanly", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "gwad-"))
+  try {
+    const entry = path.join(base, "node_modules", "pi-mcp-adapter", "dist", "index.js")
+    fs.mkdirSync(path.dirname(entry), { recursive: true })
+    fs.writeFileSync(entry, "export default {}")
+    assert.equal(piMcpAdapterEntry(base), entry)
+    assert.equal(piMcpAdapterEntry("/no/such/root"), null)
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true })
+  }
+})
+
+test("provisionPiMcp writes mcp.json and merges settings.json extensions", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "gwad-"))
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "gwst-"))
+  try {
+    const entry = path.join(base, "node_modules", "pi-mcp-adapter", "dist", "index.js")
+    fs.mkdirSync(path.dirname(entry), { recursive: true })
+    fs.writeFileSync(entry, "export default {}")
+    const agentDir = path.join(stateDir, "pi", "agent")
+    fs.mkdirSync(agentDir, { recursive: true })
+    fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ theme: "dark", extensions: ["/existing/ext.js"] }))
+    const result = provisionPiMcp(MCP, { stateDir, repoRoot: base })
+    const mcpJson = JSON.parse(fs.readFileSync(path.join(agentDir, "mcp.json"), "utf8"))
+    assert.equal(mcpJson.mcpServers.fetch.command, "npx")
+    const settings = JSON.parse(fs.readFileSync(path.join(agentDir, "settings.json"), "utf8"))
+    assert.equal(settings.theme, "dark") // 合并而非覆盖
+    assert.deepEqual(settings.extensions, ["/existing/ext.js", entry])
+    assert.ok(result.files.includes(path.join(agentDir, "mcp.json")))
+    // 权限：mcp.json 0600
+    assert.equal(fs.statSync(path.join(agentDir, "mcp.json")).mode & 0o777, 0o600)
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true })
+    fs.rmSync(stateDir, { recursive: true, force: true })
+  }
+})
+
+test("provisionPiMcp warns and skips when the adapter is not installed", () => {
+  const warnings = []
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "gwst-"))
+  try {
+    const result = provisionPiMcp(MCP, { stateDir, repoRoot: "/no/such/root", warn: (m) => warnings.push(m) })
+    assert.deepEqual(result, { files: [] })
+    assert.equal(warnings.length, 1)
+    assert.match(warnings[0], /npm install/)
+    assert.equal(fs.existsSync(path.join(stateDir, "pi")), false)
+  } finally {
     fs.rmSync(stateDir, { recursive: true, force: true })
   }
 })

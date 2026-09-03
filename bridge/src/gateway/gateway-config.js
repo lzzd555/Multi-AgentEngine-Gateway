@@ -4,7 +4,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { homedir } from "node:os"
-import { validateSkills, validateMcp, provisionSkills } from "./gateway-capabilities.js"
+import { validateSkills, validateMcp, provisionSkills, provisionPiMcp, buildOpenCodeMcpSection, buildMcpServersJson, resolveRepoRoot } from "./gateway-capabilities.js"
 
 const ENGINE_IDS = ["opencode", "omp", "pi"]
 const ALLOWED_APIS = ["openai-completions", "openai-responses", "anthropic-messages"]
@@ -210,22 +210,28 @@ function ompConfigDirName(stateDir, home = homedir()) {
   return relative.split(path.sep).join("/")
 }
 
-export function provisionEngineConfig(engineId, config, { stateDir = resolveStateDir(), mkdirSync = fs.mkdirSync, writeFileSync = fs.writeFileSync } = {}) {
+export function provisionEngineConfig(engineId, config, { stateDir = resolveStateDir(), mkdirSync = fs.mkdirSync, writeFileSync = fs.writeFileSync, repoRoot = resolveRepoRoot(), warn = (message) => process.stderr.write(`gateway config warning: ${message}\n`) } = {}) {
   const providers = config?.model?.providers ?? {}
   const hasProviders = Object.keys(providers).length > 0
   const skills = config?.skills ?? []
   const hasSkills = skills.length > 0
-  if (!hasProviders && !hasSkills) return { env: {}, files: [] }
+  const mcp = config?.mcp ?? {}
+  const hasMcp = Object.keys(mcp).length > 0
+  if (!hasProviders && !hasSkills && !hasMcp) return { env: {}, files: [] }
   const files = []
   const env = {}
   const addEnv = (entries) => Object.assign(env, entries)
   if (engineId === "opencode") {
-    if (hasProviders) {
+    if (hasProviders || hasMcp) {
       const dir = path.join(stateDir, "opencode")
       const file = path.join(dir, "opencode.json")
       // 生成文件可能含明文 API key，目录与文件都必须仅属主可读写。
       mkdirSync(dir, { recursive: true, mode: 0o700 })
-      writeFileSync(file, `${JSON.stringify(buildOpenCodeProviderConfig(config.model), null, 2)}\n`, { mode: 0o600 })
+      const content = {
+        ...buildOpenCodeProviderConfig(config.model),
+        ...(hasMcp ? { mcp: buildOpenCodeMcpSection(mcp) } : {})
+      }
+      writeFileSync(file, `${JSON.stringify(content, null, 2)}\n`, { mode: 0o600 })
       files.push(file)
       addEnv({ OPENCODE_CONFIG: file })
     }
@@ -245,6 +251,12 @@ export function provisionEngineConfig(engineId, config, { stateDir = resolveStat
       files.push(file)
     }
     if (hasSkills) files.push(...provisionSkills("omp", skills, { stateDir }).files)
+    if (hasMcp) {
+      mkdirSync(dir, { recursive: true, mode: 0o700 })
+      const file = path.join(dir, "mcp.json")
+      writeFileSync(file, `${JSON.stringify(buildMcpServersJson(mcp), null, 2)}\n`, { mode: 0o600 })
+      files.push(file)
+    }
     if (files.length > 0) {
       // OMP 配置根 = join(homedir(), PI_CONFIG_DIR)，生成文件在其 agent/ 子目录，故相对名需含 /omp。
       addEnv({ PI_CONFIG_DIR: `${ompConfigDirName(stateDir)}/omp` })
@@ -260,6 +272,7 @@ export function provisionEngineConfig(engineId, config, { stateDir = resolveStat
       files.push(file)
     }
     if (hasSkills) files.push(...provisionSkills("pi", skills, { stateDir }).files)
+    if (hasMcp) files.push(...provisionPiMcp(mcp, { stateDir, repoRoot, warn }).files)
     if (files.length > 0) addEnv({ PI_CODING_AGENT_DIR: dir })
     return { env, files }
   }

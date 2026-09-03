@@ -426,3 +426,46 @@ test("config with nothing to provision is still a no-op", () => {
   const config = { model: { providers: {} }, engines: {}, skills: [], mcp: {} }
   assert.deepEqual(provisionEngineConfig("omp", config, { stateDir: "/tmp/never" }), { env: {}, files: [] })
 })
+
+const MCP_CONFIG = {
+  fetch: { type: "local", command: ["npx", "-y", "mcp-server-fetch"], env: {} },
+  context7: { type: "remote", url: "https://mcp.context7.com/mcp", headers: {} }
+}
+
+test("opencode merges mcp into the generated opencode.json", () => {
+  const config = { model: MODEL, engines: {}, skills: [], mcp: MCP_CONFIG }
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "gwmcp-oc-"))
+  try {
+    const result = provisionEngineConfig("opencode", config, { stateDir })
+    const generated = JSON.parse(fs.readFileSync(result.env.OPENCODE_CONFIG, "utf8"))
+    assert.deepEqual(generated.mcp.fetch, { type: "local", command: ["npx", "-y", "mcp-server-fetch"] })
+    assert.equal(generated.mcp.context7.url, "https://mcp.context7.com/mcp")
+  } finally {
+    fs.rmSync(stateDir, { recursive: true, force: true })
+  }
+})
+
+test("omp writes mcp.json beside models.yml", () => {
+  const config = { model: MODEL, engines: {}, skills: [], mcp: MCP_CONFIG }
+  const stateDir = fs.mkdtempSync(path.join(os.homedir(), ".gwmcp-omp-"))
+  try {
+    provisionEngineConfig("omp", config, { stateDir })
+    const mcpJson = JSON.parse(fs.readFileSync(path.join(stateDir, "omp", "agent", "mcp.json"), "utf8"))
+    assert.equal(mcpJson.mcpServers.fetch.command, "npx")
+    assert.deepEqual(mcpJson.mcpServers.fetch.args, ["-y", "mcp-server-fetch"])
+  } finally {
+    fs.rmSync(stateDir, { recursive: true, force: true })
+  }
+})
+
+test("pi mcp falls back to a warning without the adapter", () => {
+  const config = { model: MODEL, engines: {}, skills: [], mcp: MCP_CONFIG }
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "gwmcp-pi-"))
+  try {
+    const result = provisionEngineConfig("pi", config, { stateDir, repoRoot: "/no/such/root" })
+    assert.equal(fs.existsSync(path.join(stateDir, "pi", "agent", "mcp.json")), false)
+    assert.equal(result.env.PI_CODING_AGENT_DIR, path.join(stateDir, "pi", "agent")) // models.json 仍生成
+  } finally {
+    fs.rmSync(stateDir, { recursive: true, force: true })
+  }
+})

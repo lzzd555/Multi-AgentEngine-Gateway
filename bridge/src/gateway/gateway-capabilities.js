@@ -118,3 +118,86 @@ export function provisionSkills(engineId, skills, { stateDir, cpSync = fs.cpSync
   }
   return { files }
 }
+
+export function buildOpenCodeMcpSection(mcp) {
+  const section = {}
+  for (const [name, server] of Object.entries(mcp)) {
+    section[name] = server.type === "local"
+      ? {
+          type: "local",
+          command: [...server.command],
+          ...(Object.keys(server.env).length > 0 ? { environment: { ...server.env } } : {})
+        }
+      : {
+          type: "remote",
+          url: server.url,
+          ...(Object.keys(server.headers).length > 0 ? { headers: { ...server.headers } } : {})
+        }
+  }
+  return section
+}
+
+// OMP（agent/mcp.json）与 PI（pi-mcp-adapter 读 $PI_CODING_AGENT_DIR/mcp.json）共用标准 mcpServers 结构。
+export function buildMcpServersJson(mcp) {
+  const servers = {}
+  for (const [name, server] of Object.entries(mcp)) {
+    servers[name] = server.type === "local"
+      ? {
+          command: server.command[0],
+          ...(server.command.length > 1 ? { args: server.command.slice(1) } : {}),
+          ...(Object.keys(server.env).length > 0 ? { env: { ...server.env } } : {})
+        }
+      : {
+          type: "http",
+          url: server.url,
+          ...(Object.keys(server.headers).length > 0 ? { headers: { ...server.headers } } : {})
+        }
+  }
+  return { mcpServers: servers }
+}
+
+export function piMcpAdapterEntry(repoRoot, { existsSync = fs.existsSync } = {}) {
+  // 入口以包的 package.json（main/exports）为准；候选按常见形态排列，找到即用。
+  const pkgDir = path.join(repoRoot, "node_modules", "pi-mcp-adapter")
+  const manifest = path.join(pkgDir, "package.json")
+  if (existsSync(manifest)) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(manifest, "utf8"))
+      const declared = pkg.main ?? pkg.exports?.["."]?.import ?? pkg.exports?.["."]
+      const resolved = typeof declared === "string" ? path.join(pkgDir, declared) : null
+      if (resolved && existsSync(resolved)) return resolved
+    } catch {
+      // manifest 损坏时走下面的固定候选
+    }
+  }
+  const candidates = [path.join(pkgDir, "dist", "index.js"), path.join(pkgDir, "index.js")]
+  return candidates.find((candidate) => existsSync(candidate)) ?? null
+}
+
+export function provisionPiMcp(mcp, { stateDir, repoRoot = resolveRepoRoot(), warn = () => {}, existsSync = fs.existsSync, readFileSync = fs.readFileSync, writeFileSync = fs.writeFileSync, mkdirSync = fs.mkdirSync } = {}) {
+  if (Object.keys(mcp).length === 0) return { files: [] }
+  const adapterEntry = piMcpAdapterEntry(repoRoot, { existsSync })
+  if (!adapterEntry) {
+    warn("mcp is configured but the pi engine needs the local pi-mcp-adapter (run npm install); ignoring mcp for this run")
+    return { files: [] }
+  }
+  const agentDir = path.join(stateDir, "pi", "agent")
+  mkdirSync(agentDir, { recursive: true, mode: 0o700 })
+  const mcpFile = path.join(agentDir, "mcp.json")
+  writeFileSync(mcpFile, `${JSON.stringify(buildMcpServersJson(mcp), null, 2)}\n`, { mode: 0o600 })
+  // settings.json 合并语义：已有内容（主题、既有 extensions）必须保留，只追加 adapter 入口。
+  const settingsFile = path.join(agentDir, "settings.json")
+  let settings = {}
+  if (existsSync(settingsFile)) {
+    try {
+      settings = JSON.parse(readFileSync(settingsFile, "utf8"))
+    } catch {
+      settings = {}
+    }
+  }
+  const extensions = new Set(Array.isArray(settings.extensions) ? settings.extensions : [])
+  extensions.add(adapterEntry)
+  settings.extensions = [...extensions]
+  writeFileSync(settingsFile, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 })
+  return { files: [mcpFile, settingsFile] }
+}
