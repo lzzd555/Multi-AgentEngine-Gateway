@@ -13,6 +13,10 @@
     "rehearsal": "node bridge/scripts/gateway-rehearsal.mjs --url http://localhost:6217",
     "package": "node bridge/scripts/package-solution.mjs"
   },
+  "optionalDependencies": {
+    "@automatalabs/pi-acp": "0.5.0",
+    "pi-mcp-adapter": "2.32.1"
+  },
   "engines": {
     "node": ">=20"
   },

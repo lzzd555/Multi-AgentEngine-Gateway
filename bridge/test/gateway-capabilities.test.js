@@ -7,6 +7,7 @@ import os from "node:os"
 import { validateSkills, validateMcp, resolveRepoRoot } from "../src/gateway/gateway-capabilities.js"
 import { provisionSkills, skillTargets } from "../src/gateway/gateway-capabilities.js"
 import { buildOpenCodeMcpSection, buildMcpServersJson, provisionPiMcp, piMcpAdapterEntry } from "../src/gateway/gateway-capabilities.js"
+import { piLocalCommand } from "../src/gateway/gateway-capabilities.js"
 
 function withSkill(name, run) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gwskill-"))
@@ -202,5 +203,18 @@ test("provisionPiMcp warns and skips when the adapter is not installed", () => {
     assert.equal(fs.existsSync(path.join(stateDir, "pi")), false)
   } finally {
     fs.rmSync(stateDir, { recursive: true, force: true })
+  }
+})
+
+test("piLocalCommand finds the project-local adapter binary", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "gwpil-"))
+  try {
+    assert.equal(piLocalCommand(base), null)
+    const bin = path.join(base, "node_modules", ".bin", "pi-acp")
+    fs.mkdirSync(path.dirname(bin), { recursive: true })
+    fs.writeFileSync(bin, "#!/bin/sh\n")
+    assert.deepEqual(piLocalCommand(base), { command: bin, args: [] })
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true })
   }
 })

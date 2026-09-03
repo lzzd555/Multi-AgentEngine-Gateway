@@ -4,7 +4,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { homedir } from "node:os"
-import { validateSkills, validateMcp, provisionSkills, provisionPiMcp, buildOpenCodeMcpSection, buildMcpServersJson, resolveRepoRoot } from "./gateway-capabilities.js"
+import { validateSkills, validateMcp, provisionSkills, provisionPiMcp, buildOpenCodeMcpSection, buildMcpServersJson, resolveRepoRoot, piLocalCommand } from "./gateway-capabilities.js"
 
 const ENGINE_IDS = ["opencode", "omp", "pi"]
 const ALLOWED_APIS = ["openai-completions", "openai-responses", "anthropic-messages"]
@@ -291,9 +291,15 @@ export function missingApiKeyEnvWarnings(config, environment = process.env) {
   return warnings
 }
 
-export function resolveEngineCommand(engineId, config, environment = process.env, { existsSync = fs.existsSync } = {}) {
+export function resolveEngineCommand(engineId, config, environment = process.env, { existsSync = fs.existsSync, repoRoot = resolveRepoRoot() } = {}) {
   const engine = config?.engines?.[engineId]
-  if (!engine?.command) return null
+  if (!engine?.command) {
+    if (engineId === "pi") {
+      const local = piLocalCommand(repoRoot)
+      if (local) return local
+    }
+    return null
+  }
   const command = engine.command // validateGatewayConfig 已做 ~ 展开
   if (path.isAbsolute(command) && !existsSync(command)) {
     throw new Error(`engines.${engineId}.command not found: ${command}`)

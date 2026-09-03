@@ -1,4 +1,5 @@
 .worktrees/
 .superpowers/
+node_modules/
 # 用户本地统一配置（复制自 gateway.config.example.json，apiKey 可能为明文）
 gateway.config.json

@@ -201,3 +201,13 @@ export function provisionPiMcp(mcp, { stateDir, repoRoot = resolveRepoRoot(), wa
   writeFileSync(settingsFile, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 })
   return { files: [mcpFile, settingsFile] }
 }
+
+// PI 本地化：optionalDependencies 安装后优先走项目内 pi-acp，消除 npx 首跑网络拉取（规格 §4）。
+export function piLocalCommand(repoRoot = resolveRepoRoot(), { existsSync = fs.existsSync, platform = process.platform } = {}) {
+  const names = platform === "win32" ? ["pi-acp.cmd", "pi-acp.exe", "pi-acp"] : ["pi-acp"]
+  for (const name of names) {
+    const candidate = path.join(repoRoot, "node_modules", ".bin", name)
+    if (existsSync(candidate)) return { command: candidate, args: [] }
+  }
+  return null
+}

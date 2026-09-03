@@ -308,7 +308,8 @@ test("resolveEngineCommand applies per-engine semantics", () => {
 
 test("resolveEngineCommand returns null without config command", () => {
   assert.equal(resolveEngineCommand("omp", CONFIG, {}), null)
-  assert.equal(resolveEngineCommand("pi", { ...CONFIG, engines: {} }, {}), null)
+  // 真实安装 optionalDependencies 后默认 repoRoot 会命中本地 pi-acp，用不存在的 repoRoot 保持断言确定性
+  assert.equal(resolveEngineCommand("pi", { ...CONFIG, engines: {} }, {}, { repoRoot: "/no/such/root" }), null)
 })
 
 test("resolveEngineCommand keeps omp 'acp' and replaces pi npx wrapper", () => {
@@ -320,6 +321,22 @@ test("resolveEngineCommand keeps omp 'acp' and replaces pi npx wrapper", () => {
 test("resolveEngineCommand rejects an absolute command that does not exist", () => {
   const bad = { ...CONFIG, engines: { omp: { command: "/no/such/omp" } } }
   assert.throws(() => resolveEngineCommand("omp", bad, {}), /not found/)
+})
+
+test("resolveEngineCommand prefers the project-local pi adapter", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "gwpil2-"))
+  try {
+    const bin = path.join(base, "node_modules", ".bin", "pi-acp")
+    fs.mkdirSync(path.dirname(bin), { recursive: true })
+    fs.writeFileSync(bin, "#!/bin/sh\n")
+    assert.deepEqual(resolveEngineCommand("pi", { engines: {} }, {}, { repoRoot: base }), { command: bin, args: [] })
+    assert.equal(resolveEngineCommand("pi", { engines: {} }, {}, { repoRoot: "/no/such/root" }), null)
+    // 配置 command 仍然最高优先
+    const configured = { engines: { pi: { command: bin } } }
+    assert.deepEqual(resolveEngineCommand("pi", configured, {}, { repoRoot: "/no/such/root" }), { command: bin, args: [] })
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true })
+  }
 })
 
 test("assembleGatewayRuntime provisions and resolves model priority", () => {
