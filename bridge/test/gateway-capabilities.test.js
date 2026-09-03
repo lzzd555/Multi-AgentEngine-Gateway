@@ -5,6 +5,7 @@ import fs from "node:fs"
 import path from "node:path"
 import os from "node:os"
 import { validateSkills, validateMcp, resolveRepoRoot } from "../src/gateway/gateway-capabilities.js"
+import { provisionSkills, skillTargets } from "../src/gateway/gateway-capabilities.js"
 
 function withSkill(name, run) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gwskill-"))
@@ -92,4 +93,39 @@ test("validateMcp normalizes both shapes and rejects malformed entries", () => {
 
 test("resolveRepoRoot points at the repository root", () => {
   assert.equal(resolveRepoRoot(), path.resolve(import.meta.dirname, "..", ".."))
+})
+
+test("skillTargets maps each engine to its isolated skills root", () => {
+  assert.equal(skillTargets("opencode", "/s").skillsRoot, path.join("/s", "opencode", "xdg", "opencode", "skills"))
+  assert.equal(skillTargets("omp", "/s").skillsRoot, path.join("/s", "omp", "agent", "skills"))
+  assert.equal(skillTargets("pi", "/s").skillsRoot, path.join("/s", "pi", "agent", "skills"))
+})
+
+test("provisionSkills copies whole skill dirs, companion files, and resyncs idempotently", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "gwprov-"))
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "gwstate-"))
+  try {
+    const skillDir = path.join(base, "git-release")
+    fs.mkdirSync(skillDir)
+    fs.writeFileSync(path.join(skillDir, "SKILL.md"), "---\nname: git-release\ndescription: d\n---\nbody")
+    fs.writeFileSync(path.join(skillDir, "reference.md"), "companion")
+    const result = provisionSkills("omp", [{ name: "git-release", source: skillDir }], { stateDir })
+    const target = path.join(stateDir, "omp", "agent", "skills", "git-release")
+    assert.deepEqual(result.files, [target])
+    assert.equal(fs.readFileSync(path.join(target, "SKILL.md"), "utf8"), "---\nname: git-release\ndescription: d\n---\nbody")
+    assert.equal(fs.readFileSync(path.join(target, "reference.md"), "utf8"), "companion")
+    // 幂等重同步：目标里多出的残留文件在重建后消失
+    fs.writeFileSync(path.join(target, "stale.txt"), "old")
+    provisionSkills("omp", [{ name: "git-release", source: skillDir }], { stateDir })
+    assert.equal(fs.existsSync(path.join(target, "stale.txt")), false)
+    // 源删除伴随文件后，目标不残留
+    fs.rmSync(path.join(skillDir, "reference.md"))
+    provisionSkills("omp", [{ name: "git-release", source: skillDir }], { stateDir })
+    assert.equal(fs.existsSync(path.join(target, "reference.md")), false)
+    // 空列表 no-op
+    assert.deepEqual(provisionSkills("omp", [], { stateDir }), { files: [] })
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true })
+    fs.rmSync(stateDir, { recursive: true, force: true })
+  }
 })

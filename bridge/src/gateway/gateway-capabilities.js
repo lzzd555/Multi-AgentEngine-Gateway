@@ -97,3 +97,24 @@ export function validateMcp(mcp, sourcePath) {
   }
   return normalized
 }
+
+export function skillTargets(engineId, stateDir) {
+  if (engineId === "opencode") return { skillsRoot: path.join(stateDir, "opencode", "xdg", "opencode", "skills") }
+  if (engineId === "omp") return { skillsRoot: path.join(stateDir, "omp", "agent", "skills") }
+  return { skillsRoot: path.join(stateDir, "pi", "agent", "skills") }
+}
+
+// 复制而非符号链接：Windows 无特权创建符号链接会 EPERM，且与配置文件"每次启动幂等重同步"同构（规格 §3）。
+export function provisionSkills(engineId, skills, { stateDir, cpSync = fs.cpSync, rmSync = fs.rmSync, mkdirSync = fs.mkdirSync } = {}) {
+  if (!skills || skills.length === 0) return { files: [] }
+  const { skillsRoot } = skillTargets(engineId, stateDir)
+  mkdirSync(skillsRoot, { recursive: true, mode: 0o700 })
+  const files = []
+  for (const skill of skills) {
+    const target = path.join(skillsRoot, skill.name)
+    rmSync(target, { recursive: true, force: true })
+    cpSync(skill.source, target, { recursive: true })
+    files.push(target)
+  }
+  return { files }
+}

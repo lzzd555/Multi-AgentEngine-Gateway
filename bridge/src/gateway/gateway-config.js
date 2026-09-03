@@ -4,7 +4,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { homedir } from "node:os"
-import { validateSkills, validateMcp } from "./gateway-capabilities.js"
+import { validateSkills, validateMcp, provisionSkills } from "./gateway-capabilities.js"
 
 const ENGINE_IDS = ["opencode", "omp", "pi"]
 const ALLOWED_APIS = ["openai-completions", "openai-responses", "anthropic-messages"]
@@ -211,30 +211,57 @@ function ompConfigDirName(stateDir, home = homedir()) {
 }
 
 export function provisionEngineConfig(engineId, config, { stateDir = resolveStateDir(), mkdirSync = fs.mkdirSync, writeFileSync = fs.writeFileSync } = {}) {
-  const providers = config?.model?.providers
-  if (!providers || Object.keys(providers).length === 0) return { env: {}, files: [] }
+  const providers = config?.model?.providers ?? {}
+  const hasProviders = Object.keys(providers).length > 0
+  const skills = config?.skills ?? []
+  const hasSkills = skills.length > 0
+  if (!hasProviders && !hasSkills) return { env: {}, files: [] }
+  const files = []
+  const env = {}
+  const addEnv = (entries) => Object.assign(env, entries)
   if (engineId === "opencode") {
-    const dir = path.join(stateDir, "opencode")
-    const file = path.join(dir, "opencode.json")
-    // 生成文件可能含明文 API key，目录与文件都必须仅属主可读写。
-    mkdirSync(dir, { recursive: true, mode: 0o700 })
-    writeFileSync(file, `${JSON.stringify(buildOpenCodeProviderConfig(config.model), null, 2)}\n`, { mode: 0o600 })
-    return { env: { OPENCODE_CONFIG: file }, files: [file] }
+    if (hasProviders) {
+      const dir = path.join(stateDir, "opencode")
+      const file = path.join(dir, "opencode.json")
+      // 生成文件可能含明文 API key，目录与文件都必须仅属主可读写。
+      mkdirSync(dir, { recursive: true, mode: 0o700 })
+      writeFileSync(file, `${JSON.stringify(buildOpenCodeProviderConfig(config.model), null, 2)}\n`, { mode: 0o600 })
+      files.push(file)
+      addEnv({ OPENCODE_CONFIG: file })
+    }
+    if (hasSkills) {
+      files.push(...provisionSkills("opencode", skills, { stateDir }).files)
+      // OpenCode 全局 skills 从 XDG 配置目录发现；只重定向 XDG_CONFIG_HOME，auth/数据（XDG_DATA_HOME）不动。
+      addEnv({ XDG_CONFIG_HOME: path.join(stateDir, "opencode", "xdg") })
+    }
+    return { env, files }
   }
   if (engineId === "omp") {
     const dir = path.join(stateDir, "omp", "agent")
-    const file = path.join(dir, "models.yml")
-    mkdirSync(dir, { recursive: true, mode: 0o700 })
-    writeFileSync(file, buildOmpModelsYaml(config.model), { mode: 0o600 })
-    // OMP 配置根 = join(homedir(), PI_CONFIG_DIR)，生成文件在其 agent/ 子目录，故相对名需含 /omp。
-    return { env: { PI_CONFIG_DIR: `${ompConfigDirName(stateDir)}/omp` }, files: [file] }
+    if (hasProviders) {
+      mkdirSync(dir, { recursive: true, mode: 0o700 })
+      const file = path.join(dir, "models.yml")
+      writeFileSync(file, buildOmpModelsYaml(config.model), { mode: 0o600 })
+      files.push(file)
+    }
+    if (hasSkills) files.push(...provisionSkills("omp", skills, { stateDir }).files)
+    if (files.length > 0) {
+      // OMP 配置根 = join(homedir(), PI_CONFIG_DIR)，生成文件在其 agent/ 子目录，故相对名需含 /omp。
+      addEnv({ PI_CONFIG_DIR: `${ompConfigDirName(stateDir)}/omp` })
+    }
+    return { env, files }
   }
   if (engineId === "pi") {
     const dir = path.join(stateDir, "pi", "agent")
-    const file = path.join(dir, "models.json")
-    mkdirSync(dir, { recursive: true, mode: 0o700 })
-    writeFileSync(file, `${JSON.stringify(buildPiModelsJson(config.model), null, 2)}\n`, { mode: 0o600 })
-    return { env: { PI_CODING_AGENT_DIR: dir }, files: [file] }
+    if (hasProviders) {
+      mkdirSync(dir, { recursive: true, mode: 0o700 })
+      const file = path.join(dir, "models.json")
+      writeFileSync(file, `${JSON.stringify(buildPiModelsJson(config.model), null, 2)}\n`, { mode: 0o600 })
+      files.push(file)
+    }
+    if (hasSkills) files.push(...provisionSkills("pi", skills, { stateDir }).files)
+    if (files.length > 0) addEnv({ PI_CODING_AGENT_DIR: dir })
+    return { env, files }
   }
   throw new Error(`provisionEngineConfig: unknown engine '${engineId}'`)
 }

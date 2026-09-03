@@ -362,3 +362,67 @@ test("explicit --model / GATEWAY_DEFAULT_MODEL beats config default", () => {
 test("assembleGatewayRuntime without config yields empty engineOptions", () => {
   assert.deepEqual(assembleGatewayRuntime({ engine: "opencode" }, null, {}), { engineOptions: {} })
 })
+
+function withSkillDir(name, run) {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "gwsk-"))
+  const skillDir = path.join(base, name)
+  fs.mkdirSync(skillDir)
+  fs.writeFileSync(path.join(skillDir, "SKILL.md"), `---\nname: ${name}\ndescription: d\n---\nbody`)
+  try {
+    return run(skillDir, base)
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true })
+  }
+}
+
+test("skills-only config provisions omp skills and PI_CONFIG_DIR without models.yml", () => {
+  withSkillDir("demo", (skillDir) => {
+    const config = { model: { providers: {} }, engines: {}, skills: [{ name: "demo", source: skillDir }], mcp: {} }
+    const stateDir = fs.mkdtempSync(path.join(os.homedir(), ".gwsk-state-"))
+    try {
+      const result = provisionEngineConfig("omp", config, { stateDir })
+      assert.equal(fs.existsSync(path.join(stateDir, "omp", "agent", "models.yml")), false)
+      assert.ok(fs.existsSync(path.join(stateDir, "omp", "agent", "skills", "demo", "SKILL.md")))
+      assert.equal(result.env.PI_CONFIG_DIR, `${path.relative(os.homedir(), stateDir).split(path.sep).join("/")}/omp`)
+    } finally {
+      fs.rmSync(stateDir, { recursive: true, force: true })
+    }
+  })
+})
+
+test("opencode skills inject XDG_CONFIG_HOME and never XDG_DATA_HOME", () => {
+  withSkillDir("demo", (skillDir) => {
+    const config = { model: { providers: {} }, engines: {}, skills: [{ name: "demo", source: skillDir }], mcp: {} }
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "gwsk-oc-"))
+    try {
+      const result = provisionEngineConfig("opencode", config, { stateDir })
+      assert.equal(result.env.XDG_CONFIG_HOME, path.join(stateDir, "opencode", "xdg"))
+      assert.equal(result.env.XDG_DATA_HOME, undefined)
+      assert.ok(fs.existsSync(path.join(stateDir, "opencode", "xdg", "opencode", "skills", "demo", "SKILL.md")))
+      assert.equal(result.env.OPENCODE_CONFIG, undefined) // 无 providers 时不写 opencode.json
+    } finally {
+      fs.rmSync(stateDir, { recursive: true, force: true })
+    }
+  })
+})
+
+test("providers + skills together keep both env vars and files", () => {
+  withSkillDir("demo", (skillDir) => {
+    const config = { model: MODEL, engines: {}, skills: [{ name: "demo", source: skillDir }], mcp: {} }
+    const stateDir = fs.mkdtempSync(path.join(os.homedir(), ".gwsk-both-"))
+    try {
+      const result = provisionEngineConfig("opencode", config, { stateDir })
+      assert.equal(result.env.OPENCODE_CONFIG, path.join(stateDir, "opencode", "opencode.json"))
+      assert.equal(result.env.XDG_CONFIG_HOME, path.join(stateDir, "opencode", "xdg"))
+      const generated = JSON.parse(fs.readFileSync(result.env.OPENCODE_CONFIG, "utf8"))
+      assert.ok(generated.provider.zaicoding)
+    } finally {
+      fs.rmSync(stateDir, { recursive: true, force: true })
+    }
+  })
+})
+
+test("config with nothing to provision is still a no-op", () => {
+  const config = { model: { providers: {} }, engines: {}, skills: [], mcp: {} }
+  assert.deepEqual(provisionEngineConfig("omp", config, { stateDir: "/tmp/never" }), { env: {}, files: [] })
+})
