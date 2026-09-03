@@ -52,7 +52,7 @@ docs/superpowers/          设计文档、实施计划、实测记录（run-note
 
 ## 实测状态
 
-OpenCode 1.18.26 / OMP 18.1.2 / PI(pi-acp 0.5.0) 三引擎经网关接入 GLM5.2 后 rehearsal 均 10/10（2026-09-02，macOS，引擎侧直配路径；统一配置路径的三引擎复验待真实 key，见 `docs/superpowers/plans/2026-09-02-unified-gateway-config-run-notes.md`）。详见 `docs/superpowers/plans/2026-09-01-multi-engine-gateway-run-notes.md`。待办：Windows 实机复验、评测全量用例。
+OpenCode 1.18.26 / OMP 18.1.2 / PI(pi-acp 0.5.0) 三引擎经网关接入 GLM5.2 后 rehearsal 均 10/10（macOS）：2026-09-02 引擎侧直配路径，2026-09-03 网关统一配置路径（含 opencode/omp 干净 HOME 复验，见 `docs/superpowers/plans/2026-09-02-unified-gateway-config-run-notes.md`）。详见 `docs/superpowers/plans/2026-09-01-multi-engine-gateway-run-notes.md`。待办：Windows 实机复验、评测全量用例。
 
 ## 来源与许可
 
