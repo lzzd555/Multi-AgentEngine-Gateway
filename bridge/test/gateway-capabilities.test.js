@@ -7,7 +7,7 @@ import os from "node:os"
 import { validateSkills, validateMcp, resolveRepoRoot } from "../src/gateway/gateway-capabilities.js"
 import { provisionSkills, skillTargets } from "../src/gateway/gateway-capabilities.js"
 import { buildOpenCodeMcpSection, buildMcpServersJson, buildAcpMcpServers, provisionPiMcp, piMcpAdapterEntry } from "../src/gateway/gateway-capabilities.js"
-import { piLocalCommand } from "../src/gateway/gateway-capabilities.js"
+import { piLocalCommand, expandEnvReferences, expandMcpEnvReferences } from "../src/gateway/gateway-capabilities.js"
 
 function withSkill(name, run) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gwskill-"))
@@ -256,4 +256,50 @@ test("piLocalCommand finds the project-local adapter binary", () => {
   } finally {
     fs.rmSync(base, { recursive: true, force: true })
   }
+})
+
+test("validateMcp accepts the standard mcpServers format verbatim", () => {
+  const standard = { mcpServers: { "welink-msg": { command: "uvx", args: ["--from", "https://x/y.tar.gz", "welink-msg", "stdio"], env: { WELINK_TOKEN: "{{WELINK_TOKEN}}" } } } }
+  assert.deepEqual(validateMcp(standard, "/c/gw.json"), {
+    "welink-msg": { type: "local", command: ["uvx", "--from", "https://x/y.tar.gz", "welink-msg", "stdio"], env: { WELINK_TOKEN: "{{WELINK_TOKEN}}" } }
+  })
+})
+
+test("validateMcp infers type from command/url and normalizes string commands", () => {
+  assert.deepEqual(validateMcp({ s: { command: "uvx", args: ["a"] } }, "/c/gw.json"), { s: { type: "local", command: ["uvx", "a"], env: {} } })
+  assert.deepEqual(validateMcp({ s: { command: "uvx" } }, "/c/gw.json"), { s: { type: "local", command: ["uvx"], env: {} } })
+  assert.deepEqual(validateMcp({ r: { url: "https://x/mcp" } }, "/c/gw.json"), { r: { type: "remote", url: "https://x/mcp", headers: {} } })
+  assert.throws(() => validateMcp({ s: { command: ["a"], args: ["b"] } }, "/c/gw.json"), /inside it instead/)
+  assert.throws(() => validateMcp({ s: {} }, "/c/gw.json"), /command.*url|url.*command|needs either/)
+  assert.throws(() => validateMcp({ mcpServers: { a: { command: "x" } }, b: { url: "https://x" } }, "/c/gw.json"), /must not mix/)
+  // 字符串 command 与非法 args（非数组/空串元素）都要报 args 形态错误
+  assert.throws(() => validateMcp({ s: { command: "uvx", args: "x" } }, "/c/gw.json"), /args must be an array/)
+  assert.throws(() => validateMcp({ s: { command: "uvx", args: ["ok", ""] } }, "/c/gw.json"), /args must be an array/)
+  // 非 object 的 mcpServers 外壳值落到既有名字校验报错
+  assert.throws(() => validateMcp({ mcpServers: 5 }, "/c/gw.json"), /must match/)
+})
+
+test("expandEnvReferences expands all three syntaxes and keeps missing literals", () => {
+  const env = { WELINK_TOKEN: "t-123", NESTED: "n" }
+  assert.equal(expandEnvReferences("{{WELINK_TOKEN}}", env).value, "t-123")
+  assert.equal(expandEnvReferences("${WELINK_TOKEN}", env).value, "t-123")
+  assert.equal(expandEnvReferences("$WELINK_TOKEN", env).value, "t-123")
+  assert.equal(expandEnvReferences("Bearer {{NESTED}}-x", env).value, "Bearer n-x")
+  const missing = expandEnvReferences("{{NOPE}}/${ALSO_NOPE}", env)
+  assert.equal(missing.value, "{{NOPE}}/${ALSO_NOPE}")
+  assert.deepEqual(missing.missing, ["NOPE", "ALSO_NOPE"])
+  // 无引用值原样通过，不产出缺失
+  const plain = expandEnvReferences("https://x/y", env)
+  assert.equal(plain.value, "https://x/y")
+  assert.deepEqual(plain.missing, [])
+})
+
+test("expandMcpEnvReferences expands env and headers and reports missing", () => {
+  const env = { T: "v1" }
+  const servers = { a: { type: "local", command: ["x"], env: { K: "{{T}}", M: "{{MISSING}}" } }, b: { type: "remote", url: "https://x", headers: { Auth: "Bearer ${T}" } } }
+  const result = expandMcpEnvReferences(servers, env)
+  assert.equal(result.servers.a.env.K, "v1")
+  assert.equal(result.servers.a.env.M, "{{MISSING}}")
+  assert.equal(result.servers.b.headers.Auth, "Bearer v1")
+  assert.deepEqual(result.warnings, ["mcp.a.env.M references unset environment variable MISSING; the literal reference was kept"])
 })

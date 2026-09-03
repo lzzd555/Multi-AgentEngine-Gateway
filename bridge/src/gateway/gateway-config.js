@@ -5,7 +5,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { homedir } from "node:os"
 import { fileURLToPath } from "node:url"
-import { validateSkills, validateMcp, provisionSkills, provisionPiMcp, buildOpenCodeMcpSection, buildMcpServersJson, resolveRepoRoot, piLocalCommand } from "./gateway-capabilities.js"
+import { validateSkills, validateMcp, expandMcpEnvReferences, provisionSkills, provisionPiMcp, buildOpenCodeMcpSection, buildMcpServersJson, resolveRepoRoot, piLocalCommand } from "./gateway-capabilities.js"
 
 const ENGINE_IDS = ["opencode", "omp", "pi"]
 const ALLOWED_APIS = ["openai-completions", "openai-responses", "anthropic-messages"]
@@ -84,7 +84,7 @@ function validateEngines(engines, providers, sourcePath) {
   return engines
 }
 
-export function validateGatewayConfig(parsed, sourcePath) {
+export function validateGatewayConfig(parsed, sourcePath, environment = process.env) {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new Error(`${sourcePath}: gateway config must be a JSON object`)
   }
@@ -123,11 +123,15 @@ export function validateGatewayConfig(parsed, sourcePath) {
   for (const [id, engine] of Object.entries(engines)) {
     if (engine.command !== undefined) engines[id] = { ...engine, command: expandHome(engine.command) }
   }
+  // env/headers 值的 {{VAR}}/${VAR}/$VAR 引用在加载时展开（供给的各引擎配置拿到的是最终值）；
+  // 引用未设置→保留字面并警告，与 apiKey 未设置警告同一通道（main.js 统一打印 config warnings）。
+  const { servers: mcpServers, warnings: mcpWarnings } = expandMcpEnvReferences(validateMcp(parsed.mcp, sourcePath), environment)
+  warnings.push(...mcpWarnings)
   return {
     model: { providers, default: defaultModel },
     engines,
     skills: validateSkills(parsed.skills, sourcePath),
-    mcp: validateMcp(parsed.mcp, sourcePath),
+    mcp: mcpServers,
     warnings
   }
 }
@@ -135,7 +139,7 @@ export function validateGatewayConfig(parsed, sourcePath) {
 export function loadGatewayConfig({ configPath, environment = process.env, cwd = process.cwd(), readFile = readConfigFile, existsSync = fs.existsSync } = {}) {
   const file = findGatewayConfigFile({ configPath, environment, cwd, existsSync })
   if (!file) return null
-  const validated = validateGatewayConfig(readFile(file), file)
+  const validated = validateGatewayConfig(readFile(file), file, environment)
   return { path: file, ...validated }
 }
 
