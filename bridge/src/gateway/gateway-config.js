@@ -146,11 +146,11 @@ export function resolveStateDir(environment = process.env) {
 // api.z.ai 平台升级后的 CDN 会静默丢弃携带 X25519MLKEM768 key share 的 TLS ClientHello（Node 24 /
 // OpenSSL 3.5 默认发送），纯 Node 的 pi 子进程（pi-acp）因此每次模型调用都 "Request timed out"；
 // curl/Bun 引擎不受影响。给子进程的 NODE_OPTIONS 前置 --require tls-compat-shim.cjs，限定经典曲线
-// 组即可恢复握手。NODE_OPTIONS 本身不支持引号转义（含空格的路径无法经它传递，与用户自设
-// NODE_OPTIONS 的限制一致），故直接拼接路径、不做 JSON.stringify。
+// 组即可恢复握手。NODE_OPTIONS 自 Node 12.16 起支持双引号包裹的取值，路径用双引号包起来后，
+// 含空格的仓库路径也能经它正确传递，故按 `--require "<path>"` 形式拼接。
 export function nodeOptionsWithTlsShim(environment = process.env) {
   const shim = fileURLToPath(new URL("../tls-compat-shim.cjs", import.meta.url))
-  const flag = `--require ${shim}`
+  const flag = `--require "${shim}"`
   const existing = environment.NODE_OPTIONS
   if (existing && existing.includes("tls-compat-shim")) return existing
   return existing ? `${flag} ${existing}` : flag

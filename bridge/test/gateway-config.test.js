@@ -4,9 +4,12 @@ import assert from "node:assert/strict"
 import fs from "node:fs"
 import path from "node:path"
 import os from "node:os"
+import { spawnSync } from "node:child_process"
+import { fileURLToPath } from "node:url"
 import {
   loadGatewayConfig,
   expandHome,
+  nodeOptionsWithTlsShim,
   provisionEngineConfig,
   resolveStateDir,
   buildOmpModelsYaml,
@@ -353,7 +356,7 @@ test("assembleGatewayRuntime provisions and resolves model priority", () => {
     assert.equal(runtime.engineOptions.command, PI_BIN)
     // pi 子进程 env 现在还带 TLS shim 的 NODE_OPTIONS 注入（见 nodeOptionsWithTlsShim）
     assert.equal(runtime.engineOptions.env.PI_CODING_AGENT_DIR, path.join(stateDir, "pi", "agent"))
-    assert.match(runtime.engineOptions.env.NODE_OPTIONS, /^--require .*tls-compat-shim\.cjs$/)
+    assert.match(runtime.engineOptions.env.NODE_OPTIONS, /^--require .*tls-compat-shim\.cjs"$/)
     assert.equal(runtime.defaultModel, "zaicoding/glm-5.2")
   } finally {
     fs.rmSync(stateDir, { recursive: true, force: true })
@@ -497,10 +500,10 @@ test("pi provisioning appends the TLS compat shim to NODE_OPTIONS without clobbe
     try {
       delete process.env.NODE_OPTIONS
       const clean = provisionEngineConfig("pi", config, { stateDir })
-      assert.match(clean.env.NODE_OPTIONS, /^--require .*tls-compat-shim\.cjs$/)
+      assert.match(clean.env.NODE_OPTIONS, /^--require .*tls-compat-shim\.cjs"$/)
       process.env.NODE_OPTIONS = "--experimental-flag"
       const appended = provisionEngineConfig("pi", config, { stateDir })
-      assert.match(appended.env.NODE_OPTIONS, /^--require .*tls-compat-shim\.cjs --experimental-flag$/)
+      assert.match(appended.env.NODE_OPTIONS, /^--require .*tls-compat-shim\.cjs" --experimental-flag$/)
     } finally {
       if (saved === undefined) delete process.env.NODE_OPTIONS
       else process.env.NODE_OPTIONS = saved
@@ -510,6 +513,26 @@ test("pi provisioning appends the TLS compat shim to NODE_OPTIONS without clobbe
     assert.equal(oc.env.NODE_OPTIONS, undefined)
   } finally {
     fs.rmSync(stateDir, { recursive: true, force: true })
+  }
+})
+
+test("NODE_OPTIONS shim flag quotes the path so space-containing dirs load", () => {
+  const realShim = fileURLToPath(new URL("../src/tls-compat-shim.cjs", import.meta.url))
+  const flag = nodeOptionsWithTlsShim({})
+  assert.ok(flag.includes(realShim), "flag must embed the shim path")
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gw quote dir-"))
+  try {
+    const copiedShim = path.join(dir, "tls-compat-shim.cjs")
+    fs.copyFileSync(realShim, copiedShim)
+    // 与生产同构的 flag：把真实 shim 路径替换为含空格目录中的副本，注入子进程验证可加载
+    const nodeOptions = flag.split(realShim).join(copiedShim)
+    const child = spawnSync(process.execPath, ["-e", "console.log('ok')"], {
+      env: { ...process.env, NODE_OPTIONS: nodeOptions }
+    })
+    assert.equal(child.status, 0, `stderr: ${child.stderr}`)
+    assert.equal(child.stdout.toString().trim(), "ok")
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
   }
 })
 
