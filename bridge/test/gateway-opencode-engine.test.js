@@ -113,7 +113,11 @@ test("engine injects env and args into the managed host spawn", async () => {
     env: { OPENCODE_CONFIG: "/tmp/generated/opencode.json" },
     spawnProcess: (command, args, options) => { spawns.push({ command, args, options }); return fakeChild() },
     startTimeoutMs: 5,
-    waitUntilReady: async () => {}
+    waitUntilReady: async () => {},
+    // 本测试只断言 spawn 参数；注入直接抛错的 fetch，避免 initialize 的 SSE 泵对默认端口
+    // 发起真实网络请求——若本机恰有 opencode serve 监听 14096，真实 SSE 会挂住 reader 导致
+    // 测试进程无法退出。
+    fetchImpl: async () => { throw new Error("unit test: no upstream") }
   })
   await engine.initialize()
   const spawn = spawns.at(-1)
@@ -200,4 +204,67 @@ test("directory-scoped sessions: SSE subscription opened per directory, shared a
   await engine.dispose()
   await new Promise((r) => setTimeout(r, 30))
   assert.ok(eventReqs.filter((r) => r.url.includes("directory=")).every((r) => r.signal?.aborted), "directory SSE aborted on dispose")
+})
+
+test("directory-scoped sessions: prompt waits on scoped status polling, not unscoped", async () => {
+  // 实测：目录作用域会话的 busy 态只出现在 /session/status?directory= 上，无作用域状态恒为 idle。
+  let scopedPolls = 0
+  let unscopedPolls = 0
+  const fetchImpl = async (url, init = {}) => {
+    const u = String(url)
+    if (u.includes("/event")) return new Response("{}", { status: 200 })
+    if (u.endsWith("/session?directory=%2Ftmp%2FdirS") && init.method === "POST") {
+      return new Response(JSON.stringify({ id: "ses_scope1" }), { status: 200 })
+    }
+    if (u.includes("/ses_scope1/prompt_async")) return new Response(null, { status: 204 })
+    if (u.includes("/session/status?directory=")) {
+      scopedPolls += 1
+      // 前 5 次作用域轮询报 busy，之后转 idle
+      const type = scopedPolls <= 5 ? "busy" : "idle"
+      return new Response(JSON.stringify({ ses_scope1: { type } }), { status: 200 })
+    }
+    if (u.endsWith("/session/status")) {
+      unscopedPolls += 1
+      return new Response(JSON.stringify({ ses_scope1: { type: "idle" } }), { status: 200 })
+    }
+    return new Response("{}", { status: 200 })
+  }
+  const engine = createOpenCodeEngine({ manageHost: false, fetchImpl, pollIntervalMs: 10, promptTimeoutMs: 5_000 })
+  await engine.initialize()
+  await engine.createSession({ title: "s", directory: "/tmp/dirS" })
+  let done = false
+  const promptPromise = engine.prompt("ses_scope1", { text: "hi" }).then(() => { done = true })
+  await new Promise((r) => setTimeout(r, 30))
+  assert.equal(done, false, "prompt still pending while scoped status reports busy")
+  assert.ok(scopedPolls > 0, "scoped status was polled")
+  assert.equal(unscopedPolls, 0, "unscoped status must not be relied on for a scoped session")
+  await promptPromise
+  assert.equal(done, true)
+  assert.ok(scopedPolls >= 6, "prompt resolved only after the scoped busy -> idle transition")
+  await engine.dispose()
+})
+
+test("directory-scoped sessions: listSessionStatuses merges scoped statuses over unscoped", async () => {
+  const fetchImpl = async (url, init = {}) => {
+    const u = String(url)
+    if (u.includes("/event")) return new Response("{}", { status: 200 })
+    if (u.endsWith("/session?directory=%2Ftmp%2FdirX") && init.method === "POST") {
+      return new Response(JSON.stringify({ id: "ses_x1" }), { status: 200 })
+    }
+    if (u.endsWith("/session/status")) {
+      // 无作用域视图：把作用域会话误报为 idle（实测行为）
+      return new Response(JSON.stringify({ plainSes: { type: "idle" }, ses_x1: { type: "idle" } }), { status: 200 })
+    }
+    if (u.includes("/session/status?directory=")) {
+      return new Response(JSON.stringify({ ses_x1: { type: "busy" } }), { status: 200 })
+    }
+    return new Response("{}", { status: 200 })
+  }
+  const engine = createOpenCodeEngine({ manageHost: false, fetchImpl })
+  await engine.initialize()
+  await engine.createSession({ title: "x", directory: "/tmp/dirX" })
+  const statuses = await engine.listSessionStatuses()
+  // 合并结果同时含无作用域会话与作用域会话，且作用域视图（busy）覆盖无作用域误报（idle）
+  assert.deepEqual(statuses, { plainSes: { type: "idle" }, ses_x1: { type: "busy" } })
+  await engine.dispose()
 })

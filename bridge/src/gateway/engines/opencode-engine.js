@@ -100,7 +100,7 @@ export function createOpenCodeEngine({
     const submittedAt = Date.now()
     let sawBusy = false
     while (Date.now() < deadline) {
-      const statuses = await requestJSON("/session/status")
+      const statuses = await requestJSON(statusPath(sessionID))
       if (statuses?.[sessionID]?.type === "busy") sawBusy = true
       else if (sawBusy || Date.now() - submittedAt >= startupGraceMs) return
       await sleepImpl(pollIntervalMs)
@@ -159,6 +159,13 @@ export function createOpenCodeEngine({
     return directory ? `${base}?directory=${encodeURIComponent(directory)}` : base
   }
 
+  // 通用规范 1.2：目录作用域会话的 busy 态只出现在 /session/status?directory= 上（实测确认），
+  // 无作用域状态恒为 idle，轮询它会把进行中的回合误判为已结束。
+  function statusPath(sessionID) {
+    const directory = sessionDirectories.get(sessionID)
+    return directory ? `/session/status?directory=${encodeURIComponent(directory)}` : "/session/status"
+  }
+
   return {
     id: "opencode",
     label: "OpenCode",
@@ -207,7 +214,14 @@ export function createOpenCodeEngine({
     },
 
     async listSessionStatuses() {
-      return (await requestJSON("/session/status")) ?? {}
+      // 通用规范 1.2：无作用域状态会把目录作用域会话误报为 idle，因此逐目录补拉作用域视图，
+      // 按会话合并且作用域值优先（它才是这些会话的权威状态）。
+      const merged = (await requestJSON("/session/status")) ?? {}
+      for (const directory of new Set(sessionDirectories.values())) {
+        const scoped = await requestJSON(`/session/status?directory=${encodeURIComponent(directory)}`)
+        if (scoped) Object.assign(merged, scoped)
+      }
+      return merged
     },
 
     async prompt(sessionID, { text, model } = {}) {
