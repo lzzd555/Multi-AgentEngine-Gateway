@@ -75,7 +75,7 @@ curl -s localhost:6219/session/ses_f98e5de29ffeAul7ex4CF7upjo
 
 ### 2.1 首轮发现缺陷（已修复）
 
-首轮冒烟暴露一个隐蔽缺陷：目录作用域会话的 **busy 态只出现在 `/session/status?directory=` 作用域查询中**（无作用域 status 恒显 idle——规格 §3.2 的"实测可命中"假设只对 idle 成立）。后果：`waitUntilIdle` 无作用域轮询 2 秒宽限后假完成 → `prompt_async` 提前 204（实测 2.08s 即返回，而回合仍在后台执行，文件数十秒后才落地）。修复（commit `e964723`）：`waitUntilIdle` 对映射会话轮询作用域 status（`statusPath` 辅助）；`listSessionStatuses` 聚合无作用域 + 各目录作用域结果（作用域值优先），网关 `GET /session/status` 对目录会话不再误报 idle。实证：修复后真实回合期间作用域 status 持续 busy 18+ 次轮询、无作用域恒 idle。
+首轮冒烟暴露一个隐蔽缺陷：目录作用域会话的 **busy 态只出现在 `/session/status?directory=` 作用域查询中**（无作用域 status 恒显 idle——规格 §3.2 的"实测可命中"假设只对 idle 成立）。后果：`waitUntilIdle` 无作用域轮询 2 秒宽限后假完成 → `prompt_async` 提前 204（实测 2.08s 即返回，而回合仍在后台执行，文件数十秒后才落地）。修复（commit `e964723`）：`waitUntilIdle` 对映射会话轮询作用域 status（`statusPath` 辅助）；`listSessionStatuses` 聚合无作用域 + 各目录作用域结果（作用域值优先）。waitUntilIdle 真实阻塞使网关注册表 busy 窗口正确（用户可见修复）；listSessionStatuses 聚合为契约层防御。实证：修复后真实回合期间作用域 status 持续 busy 18+ 次轮询、无作用域恒 idle。
 
 ### 2.2 修复后复验（全部通过）
 
@@ -83,7 +83,7 @@ curl -s localhost:6219/session/ses_f98e5de29ffeAul7ex4CF7upjo
 |---|---|
 | 会话 A（dirA，无 title，三步建文件任务） | ✅ prompt **真实阻塞 13.0s** 至回合完成（不再 2 秒假返回），a1/a2/a3.txt 即时落 `/tmp/v12-dirA` |
 | 会话 B（dirB，两步建文件任务） | ✅ b1/b2.txt 落 `/tmp/v12-dirB`；轨迹完整（write×2 → 工具结果 → 总结文本） |
-| busy 聚合 | ✅ B 回合进行中网关 `GET /session/status` 正确显示 `busy`（修复前会误显 idle） |
+| busy 窗口 | ✅ B 回合进行中网关 `GET /session/status` 正确显示 `busy`（修复前会误显 idle）。waitUntilIdle 真实阻塞使网关注册表 busy 窗口正确（用户可见修复）；listSessionStatuses 聚合为契约层防御 |
 | 目录隔离 | ✅ dirA 仅 a1-a3、dirB 仅 b1-b2，互不串扰 |
 | SSE 分路 | ✅ 两会话事件均经网关 `/event` 正常推送（message.part.updated/session.idle） |
 | rehearsal 回归（默认目录） | ✅ **10/10**（6.6s） |

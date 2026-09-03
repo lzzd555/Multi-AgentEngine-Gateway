@@ -210,7 +210,8 @@ export function createOpenCodeEngine({
     },
 
     async deleteSession(sessionID) {
-      await request(`/session/${encodeURIComponent(sessionID)}`, { method: "DELETE" })
+      await request(scopedPath(sessionID, ""), { method: "DELETE" })
+      sessionDirectories.delete(sessionID)
     },
 
     async listSessionStatuses() {

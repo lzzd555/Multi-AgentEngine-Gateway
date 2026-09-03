@@ -244,6 +244,53 @@ test("directory-scoped sessions: prompt waits on scoped status polling, not unsc
   await engine.dispose()
 })
 
+test("directory-scoped sessions: deleteSession deletes via scoped path and clears the mapping", async () => {
+  const requests = []
+  const fetchImpl = async (url, init = {}) => {
+    const u = String(url)
+    requests.push({ url: u, method: init.method ?? "GET" })
+    if (u.includes("/event")) return new Response("{}", { status: 200 })
+    if (u.endsWith("/session?directory=%2Ftmp%2FdirD") && init.method === "POST") {
+      return new Response(JSON.stringify({ id: "ses_del1" }), { status: 200 })
+    }
+    if (u.endsWith("/session") && init.method === "POST") return new Response(JSON.stringify({ id: "ses_del2" }), { status: 200 })
+    if (u.endsWith("/session/status")) return new Response(JSON.stringify({}), { status: 200 })
+    return new Response("{}", { status: 200 })
+  }
+  const engine = createOpenCodeEngine({ manageHost: false, fetchImpl })
+  await engine.initialize()
+  try {
+    await engine.createSession({ title: "d", directory: "/tmp/dirD" }) // 映射会话
+    await engine.createSession({ title: "p" }) // 未映射会话
+
+    // 删除前：映射存在，listSessionStatuses 会补拉该目录的作用域 status
+    requests.length = 0
+    await engine.listSessionStatuses()
+    assert.ok(requests.some((r) => r.url.includes("/session/status?directory=%2Ftmp%2FdirD")), "scoped status fetched while mapping exists")
+
+    await engine.deleteSession("ses_del1")
+    // 映射会话的 DELETE 路径带 directory 查询参数
+    assert.ok(
+      requests.some((r) => r.url.endsWith("/session/ses_del1?directory=%2Ftmp%2FdirD") && r.method === "DELETE"),
+      "DELETE issued on the scoped path for a mapped session"
+    )
+
+    // 删除后：映射已清理，listSessionStatuses 不再对该目录发作用域 status 请求
+    requests.length = 0
+    await engine.listSessionStatuses()
+    assert.ok(!requests.some((r) => r.url.includes("/session/status?directory=")), "no scoped status fetch once the mapping is cleared")
+
+    // 未映射会话的 DELETE 路径保持无 query
+    await engine.deleteSession("ses_del2")
+    const del2 = requests.find((r) => r.method === "DELETE")
+    assert.ok(del2, "DELETE issued for the unmapped session")
+    assert.ok(del2.url.endsWith("/session/ses_del2") && !del2.url.includes("?"), "no directory query for an unmapped session")
+  } finally {
+    // dispose 必须始终执行：断言失败时 SSE 泵的轮询定时器会挂住测试进程
+    await engine.dispose()
+  }
+})
+
 test("directory-scoped sessions: listSessionStatuses merges scoped statuses over unscoped", async () => {
   const fetchImpl = async (url, init = {}) => {
     const u = String(url)

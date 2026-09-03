@@ -45,7 +45,7 @@
 
 - 引擎维护 `sessionDirectories: Map<sessionID, absDirectory>`（`path.resolve` 归一）
 - `createSession({title, directory})`：directory 非空 → `POST /session?directory=<encodeURIComponent(abs)>` 并记录映射；为空走现状
-- 会话级请求（prompt_async、abort、message）经统一请求辅助注入 `?directory=<映射值>`；无映射不注入。全局 `/session/status` 轮询保持无作用域（实测可命中目录作用域会话的状态，不改动）
+- 会话级请求（prompt_async、abort、message）经统一请求辅助注入 `?directory=<映射值>`；无映射不注入。全局 `/session/status` 轮询保持无作用域（实测可命中目录作用域会话的状态，不改动）（修订：实测发现目录会话 busy 态仅作用域可见，waitUntilIdle 已改按映射作用域轮询、listSessionStatuses 聚合——见 run-notes §2.1，commit e964723）
 - **SSE 按目录分路**：引擎现有的无作用域 `/event` 订阅保持（服务默认会话）；首次为某目录创建会话时额外建立 `/event?directory=<dir>` 订阅，SSE 事件解析与过滤逻辑与现有一致，事件并入同一 emit 分发；同目录多会话共享一条订阅（`Map<dir, controller>`）；`dispose()` 时全部 abort
 - OMP/PI 引擎不动（ACP `session/new` 的 cwd 已正确实现目录隔离）
 
