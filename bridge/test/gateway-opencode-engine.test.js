@@ -124,3 +124,80 @@ test("engine injects env and args into the managed host spawn", async () => {
   assert.equal(spawn.options.env.PATH, process.env.PATH)
   await engine.dispose()
 })
+
+test("directory-scoped sessions: create records mapping and routes per-session requests", async () => {
+  const requests = []
+  const fetchImpl = async (url, init = {}) => {
+    requests.push({ url: String(url), method: init.method ?? "GET", body: init.body })
+    if (String(url).endsWith("/session?directory=%2Ftmp%2FdirA") && init.method === "POST") {
+      return new Response(JSON.stringify({ id: "ses_dirA" }), { status: 200 })
+    }
+    if (String(url).includes("/ses_dirA/message")) return new Response("[]", { status: 200 })
+    if (String(url).includes("/ses_dirA/prompt_async")) return new Response(null, { status: 204 })
+    if (String(url).endsWith("/session/status")) return new Response(JSON.stringify({ ses_dirA: { type: "idle" } }), { status: 200 })
+    return new Response("{}", { status: 200 })
+  }
+  const engine = createOpenCodeEngine({ manageHost: false, fetchImpl, promptTimeoutMs: 800, pollIntervalMs: 20 })
+  await engine.initialize()
+  await engine.createSession({ title: "a", directory: "/tmp/dirA" })
+  // 建会话带了 directory 查询
+  assert.ok(requests.some((r) => r.url.endsWith("/session?directory=%2Ftmp%2FdirA") && r.method === "POST"))
+  await engine.prompt("ses_dirA", { text: "hi", model: "zaicoding/glm-5.2" })
+  // prompt 与 message 均注入 directory
+  assert.ok(requests.some((r) => r.url.includes("/ses_dirA/prompt_async?directory=") && r.method === "POST"))
+  await engine.listMessages("ses_dirA")
+  assert.ok(requests.some((r) => r.url.includes("/ses_dirA/message?directory=")))
+  await engine.dispose()
+})
+
+test("directory-scoped sessions: unmapped sessions keep unscoped request paths", async () => {
+  const requests = []
+  const fetchImpl = async (url, init = {}) => {
+    requests.push({ url: String(url), method: init.method ?? "GET" })
+    if (String(url).endsWith("/session") && init.method === "POST") return new Response(JSON.stringify({ id: "ses_plain" }), { status: 200 })
+    if (String(url).includes("/ses_plain/message")) return new Response("[]", { status: 200 })
+    return new Response("{}", { status: 200 })
+  }
+  const engine = createOpenCodeEngine({ manageHost: false, fetchImpl })
+  await engine.initialize()
+  await engine.createSession({ title: "p" })
+  await engine.listMessages("ses_plain")
+  const msgReq = requests.find((r) => r.url.includes("/ses_plain/message"))
+  assert.ok(msgReq, "message request made")
+  assert.ok(!msgReq.url.includes("directory="), "no directory injected for unscoped session")
+  await engine.dispose()
+})
+
+test("directory-scoped sessions: SSE subscription opened per directory, shared and disposed", async () => {
+  const sseRequests = []
+  const fetchImpl = async (url, init = {}) => {
+    const u = String(url)
+    sseRequests.push({ url: u, signal: init.signal })
+    if (u.includes("/event")) {
+      // 无 body 的 SSE：挂起直到 signal abort
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("data: {\"type\":\"server.connected\",\"properties\":{}}\n\n"))
+          init.signal?.addEventListener("abort", () => controller.close())
+        }
+      }), { status: 200, headers: { "Content-Type": "text/event-stream" } })
+    }
+    if (u.endsWith("/session?directory=%2Ftmp%2FdirB") && init.method === "POST") return new Response(JSON.stringify({ id: "ses_b1" }), { status: 200 })
+    if (u.endsWith("/session?directory=%2Ftmp%2FdirC") && init.method === "POST") return new Response(JSON.stringify({ id: "ses_c1" }), { status: 200 })
+    return new Response("{}", { status: 200 })
+  }
+  const engine = createOpenCodeEngine({ manageHost: false, fetchImpl })
+  await engine.initialize()
+  await engine.createSession({ title: "b", directory: "/tmp/dirB" })
+  await engine.createSession({ title: "b2", directory: "/tmp/dirB/" }) // 尾斜杠归一后同目录
+  await engine.createSession({ title: "c", directory: "/tmp/dirC" })
+  await new Promise((r) => setTimeout(r, 50))
+  // 默认 /event 一条 + dirB 一条 + dirC 一条（dirB 复用，不重复开）
+  const eventReqs = sseRequests.filter((r) => r.url.includes("/event"))
+  assert.equal(eventReqs.filter((r) => r.url.includes("dirB")).length, 1)
+  assert.equal(eventReqs.filter((r) => r.url.includes("dirC")).length, 1)
+  assert.ok(eventReqs.some((r) => !r.url.includes("directory=")), "default unscoped stream kept")
+  await engine.dispose()
+  await new Promise((r) => setTimeout(r, 30))
+  assert.ok(eventReqs.filter((r) => r.url.includes("directory=")).every((r) => r.signal?.aborted), "directory SSE aborted on dispose")
+})

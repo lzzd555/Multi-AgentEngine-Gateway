@@ -1,4 +1,5 @@
 // bridge/src/gateway/engines/opencode-engine.js
+import path from "node:path"
 import { ManagedOpenCodeHost } from "../../opencode-host.js"
 import { normalizeOpenCodeMessages } from "./normalize-opencode.js"
 
@@ -43,6 +44,10 @@ export function createOpenCodeEngine({
   // (A body-level `let host` would redeclare the parameter — a SyntaxError.)
   let managedHost
   let running = false
+  // 通用规范 1.2：会话可绑定目录；sessionDirectories 记住绑定关系以便后续请求续带 ?directory=，
+  // directoryStreams 为每个目录维护一条 SSE 订阅（目录会话的事件只出现在对应目录流上）。
+  const sessionDirectories = new Map()
+  const directoryStreams = new Map()
 
   function emit(event) {
     for (const listener of [...listeners]) {
@@ -104,10 +109,10 @@ export function createOpenCodeEngine({
   }
 
   // Forward the upstream SSE stream to engine listeners, keeping only spec event types.
-  async function pumpEventStream(signal) {
+  async function pumpEventStream(signal, eventPath = "/event") {
     while (running) {
       try {
-        const response = await fetchImpl(`${base}/event`, { headers: { Authorization: authorization }, signal })
+        const response = await fetchImpl(`${base}${eventPath}`, { headers: { Authorization: authorization }, signal })
         if (!response.body) throw new Error("upstream SSE has no body")
         const reader = response.body.getReader()
         const decoder = new TextDecoder()
@@ -139,6 +144,21 @@ export function createOpenCodeEngine({
     }
   }
 
+  // 通用规范 1.2：目录作用域会话的事件只出现在 /event?directory=<dir> 流上（实测确认），
+  // 默认无作用域流收不到；因此每个目录首会话补一条订阅，事件并入同一 emit 分发。
+  function ensureDirectoryStream(directory) {
+    if (directoryStreams.has(directory)) return
+    const controller = new AbortController()
+    directoryStreams.set(directory, controller)
+    void pumpEventStream(controller.signal, `/event?directory=${encodeURIComponent(directory)}`)
+  }
+
+  function scopedPath(sessionID, suffix) {
+    const directory = sessionDirectories.get(sessionID)
+    const base = `/session/${encodeURIComponent(sessionID)}${suffix}`
+    return directory ? `${base}?directory=${encodeURIComponent(directory)}` : base
+  }
+
   return {
     id: "opencode",
     label: "OpenCode",
@@ -162,16 +182,23 @@ export function createOpenCodeEngine({
 
     async dispose() {
       running = false
+      for (const controller of directoryStreams.values()) controller.abort()
+      directoryStreams.clear()
       managedHost?.stop()
     },
 
     async createSession({ title, directory } = {}) {
-      const query = directory ? `?directory=${encodeURIComponent(directory)}` : ""
+      const normalized = typeof directory === "string" && directory.trim() ? path.resolve(directory) : undefined
+      const query = normalized ? `?directory=${encodeURIComponent(normalized)}` : ""
       const session = await requestJSON(`/session${query}`, {
         method: "POST",
         body: JSON.stringify({ title: title ?? "session" })
       })
       if (typeof session?.id !== "string") throw engineUnavailable("OpenCode createSession returned no id")
+      if (normalized) {
+        sessionDirectories.set(session.id, normalized)
+        ensureDirectoryStream(normalized)
+      }
       return { id: session.id }
     },
 
@@ -185,7 +212,7 @@ export function createOpenCodeEngine({
 
     async prompt(sessionID, { text, model } = {}) {
       const modelPart = splitModel(model)
-      const response = await request(`/session/${encodeURIComponent(sessionID)}/prompt_async`, {
+      const response = await request(scopedPath(sessionID, "/prompt_async"), {
         method: "POST",
         body: JSON.stringify({
           parts: [{ type: "text", text: text ?? "" }],
@@ -199,14 +226,14 @@ export function createOpenCodeEngine({
     },
 
     async abort(sessionID) {
-      const response = await request(`/session/${encodeURIComponent(sessionID)}/abort`, { method: "POST" })
+      const response = await request(scopedPath(sessionID, "/abort"), { method: "POST" })
       if (response.status === 404) {
-        await request(`/session/${encodeURIComponent(sessionID)}/stop`, { method: "POST" })
+        await request(scopedPath(sessionID, "/stop"), { method: "POST" })
       }
     },
 
     async listMessages(sessionID) {
-      const messages = await requestJSON(`/session/${encodeURIComponent(sessionID)}/message`)
+      const messages = await requestJSON(scopedPath(sessionID, "/message"))
       return normalizeOpenCodeMessages(messages)
     },
 
