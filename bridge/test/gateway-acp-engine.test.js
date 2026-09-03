@@ -202,3 +202,85 @@ test("engine passes command override and env injection into the spawned adapter"
   assert.equal(spawn.options.env.PI_CODING_AGENT_DIR, "/tmp/gw/pi/agent")
   assert.ok(spawn.options.env.PATH !== undefined || Object.keys(spawn.options.env).length > 1)
 })
+
+// omp 的 ACP 模式刻意关闭磁盘 mcp.json 发现（enableMCP:false），MCP 服务器只能由 ACP 客户端经
+// session/new.mcpServers 下发；pi 走本地 adapter 读盘，重复下发会双挂载，必须保持空。
+const ENGINE_MCP = {
+  fetch: { type: "local", command: ["npx", "-y", "mcp-server-fetch"], env: { K: "V" } },
+  context7: { type: "remote", url: "https://mcp.context7.com/mcp", headers: {} }
+}
+
+test("omp engine forwards configured mcp servers through session/new", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "gateway-acp-mcp-"))
+  const acp = new FakeOmpAcp({ sessionRoot: path.join(root, "sessions"), cwd: root })
+  const engine = createAcpEngine({
+    profileId: "omp",
+    acp,
+    stateDirectory: path.join(root, "state"),
+    mcp: ENGINE_MCP
+  })
+  try {
+    await engine.initialize()
+    await engine.createSession({ title: "mcp" })
+    const params = acp.calls("session/new").at(-1)[1]
+    assert.deepEqual(params.mcpServers, [
+      { name: "fetch", command: "npx", args: ["-y", "mcp-server-fetch"], env: [{ name: "K", value: "V" }] },
+      { name: "context7", type: "http", url: "https://mcp.context7.com/mcp", headers: [] }
+    ])
+  } finally {
+    await engine.dispose()
+  }
+})
+
+test("pi engine keeps session/new mcpServers empty (on-disk adapter path)", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "gateway-acp-pimcp-"))
+  const acp = new FakeOmpAcp({ sessionRoot: path.join(root, "sessions"), cwd: root })
+  const engine = createAcpEngine({
+    profileId: "pi",
+    acp,
+    stateDirectory: path.join(root, "state"),
+    mcp: ENGINE_MCP
+  })
+  try {
+    await engine.initialize()
+    await engine.createSession({ title: "pi-mcp" })
+    const params = acp.calls("session/new").at(-1)[1]
+    assert.deepEqual(params.mcpServers, [])
+  } finally {
+    await engine.dispose()
+  }
+})
+
+test("omp engine without configured mcp still sends an empty mcpServers array", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "gateway-acp-nomcp-"))
+  const acp = new FakeOmpAcp({ sessionRoot: path.join(root, "sessions"), cwd: root })
+  const engine = createAcpEngine({ profileId: "omp", acp, stateDirectory: path.join(root, "state") })
+  try {
+    await engine.initialize()
+    await engine.createSession({ title: "bare" })
+    assert.deepEqual(acp.calls("session/new").at(-1)[1].mcpServers, [])
+  } finally {
+    await engine.dispose()
+  }
+})
+
+// 重启后重开走 session/load（或 resume），omp 在这两条路径上同样按 mcpServers 重建 MCP——
+// 网关必须在重开时下发同一列表，否则配置的 MCP 在重启后静默消失。
+test("AcpService carries configured mcpServers into session/load and session/resume", async () => {
+  const { AcpService } = await import("../src/acp-service.js")
+  const root = await mkdtemp(path.join(tmpdir(), "gateway-acp-reopen-"))
+  const servers = [{ name: "fetch", command: "npx", args: ["-y", "mcp-server-fetch"], env: [] }]
+
+  const loader = new FakeOmpAcp({ sessionRoot: path.join(root, "sessions"), cwd: root })
+  await loader.seedSession("omp-reopen-1", { entries: [], title: undefined })
+  const loadService = new AcpService(loader, { mcpServers: servers })
+  await loadService.claimSession("omp-reopen-1")
+  assert.deepEqual(loader.calls("session/load").at(-1)[1].mcpServers, servers)
+
+  const resumed = new FakeOmpAcp({ sessionRoot: path.join(root, "sessions"), cwd: root })
+  await resumed.seedSession("omp-reopen-2", { entries: [], title: undefined })
+  // journalPageWhileOwned:false + resume 能力 → 重开走 session/resume（omp profile 的形态）
+  const resumeService = new AcpService(resumed, { journalPageWhileOwned: false, mcpServers: servers })
+  await resumeService.claimSession("omp-reopen-2")
+  assert.deepEqual(resumed.calls("session/resume").at(-1)[1].mcpServers, servers)
+})

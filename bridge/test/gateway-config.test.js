@@ -351,7 +351,9 @@ test("assembleGatewayRuntime provisions and resolves model priority", () => {
     )
     assert.deepEqual(provisioned, ["pi"])
     assert.equal(runtime.engineOptions.command, PI_BIN)
-    assert.deepEqual(runtime.engineOptions.env, { PI_CODING_AGENT_DIR: path.join(stateDir, "pi", "agent") })
+    // pi 子进程 env 现在还带 TLS shim 的 NODE_OPTIONS 注入（见 nodeOptionsWithTlsShim）
+    assert.equal(runtime.engineOptions.env.PI_CODING_AGENT_DIR, path.join(stateDir, "pi", "agent"))
+    assert.match(runtime.engineOptions.env.NODE_OPTIONS, /^--require .*tls-compat-shim\.cjs$/)
     assert.equal(runtime.defaultModel, "zaicoding/glm-5.2")
   } finally {
     fs.rmSync(stateDir, { recursive: true, force: true })
@@ -482,6 +484,52 @@ test("pi mcp falls back to a warning without the adapter", () => {
     const result = provisionEngineConfig("pi", config, { stateDir, repoRoot: "/no/such/root" })
     assert.equal(fs.existsSync(path.join(stateDir, "pi", "agent", "mcp.json")), false)
     assert.equal(result.env.PI_CODING_AGENT_DIR, path.join(stateDir, "pi", "agent")) // models.json 仍生成
+  } finally {
+    fs.rmSync(stateDir, { recursive: true, force: true })
+  }
+})
+
+test("pi provisioning appends the TLS compat shim to NODE_OPTIONS without clobbering", () => {
+  const config = { model: MODEL, engines: {}, skills: [], mcp: {} }
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "gwtls-"))
+  try {
+    const saved = process.env.NODE_OPTIONS
+    try {
+      delete process.env.NODE_OPTIONS
+      const clean = provisionEngineConfig("pi", config, { stateDir })
+      assert.match(clean.env.NODE_OPTIONS, /^--require .*tls-compat-shim\.cjs$/)
+      process.env.NODE_OPTIONS = "--experimental-flag"
+      const appended = provisionEngineConfig("pi", config, { stateDir })
+      assert.match(appended.env.NODE_OPTIONS, /^--require .*tls-compat-shim\.cjs --experimental-flag$/)
+    } finally {
+      if (saved === undefined) delete process.env.NODE_OPTIONS
+      else process.env.NODE_OPTIONS = saved
+    }
+    // 其他引擎不带 NODE_OPTIONS 注入
+    const oc = provisionEngineConfig("opencode", config, { stateDir })
+    assert.equal(oc.env.NODE_OPTIONS, undefined)
+  } finally {
+    fs.rmSync(stateDir, { recursive: true, force: true })
+  }
+})
+
+test("assembleGatewayRuntime forwards configured mcp through engineOptions", () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "gwrt-mcp-"))
+  try {
+    const runtime = assembleGatewayRuntime(
+      { engine: "omp" },
+      { ...CONFIG, mcp: MCP_CONFIG },
+      {},
+      { stateDir, provision: () => ({ env: {}, files: [] }) }
+    )
+    assert.deepEqual(runtime.engineOptions.mcp, MCP_CONFIG)
+    const bare = assembleGatewayRuntime(
+      { engine: "omp" },
+      { ...CONFIG, mcp: {} },
+      {},
+      { stateDir, provision: () => ({ env: {}, files: [] }) }
+    )
+    assert.equal(bare.engineOptions.mcp, undefined)
   } finally {
     fs.rmSync(stateDir, { recursive: true, force: true })
   }

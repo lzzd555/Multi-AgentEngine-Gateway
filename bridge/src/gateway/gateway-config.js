@@ -4,6 +4,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { homedir } from "node:os"
+import { fileURLToPath } from "node:url"
 import { validateSkills, validateMcp, provisionSkills, provisionPiMcp, buildOpenCodeMcpSection, buildMcpServersJson, resolveRepoRoot, piLocalCommand } from "./gateway-capabilities.js"
 
 const ENGINE_IDS = ["opencode", "omp", "pi"]
@@ -142,6 +143,19 @@ export function resolveStateDir(environment = process.env) {
   return expandHome(environment.GATEWAY_STATE_DIR ?? path.join(homedir(), DEFAULT_STATE_DIRNAME))
 }
 
+// api.z.ai 平台升级后的 CDN 会静默丢弃携带 X25519MLKEM768 key share 的 TLS ClientHello（Node 24 /
+// OpenSSL 3.5 默认发送），纯 Node 的 pi 子进程（pi-acp）因此每次模型调用都 "Request timed out"；
+// curl/Bun 引擎不受影响。给子进程的 NODE_OPTIONS 前置 --require tls-compat-shim.cjs，限定经典曲线
+// 组即可恢复握手。NODE_OPTIONS 本身不支持引号转义（含空格的路径无法经它传递，与用户自设
+// NODE_OPTIONS 的限制一致），故直接拼接路径、不做 JSON.stringify。
+export function nodeOptionsWithTlsShim(environment = process.env) {
+  const shim = fileURLToPath(new URL("../tls-compat-shim.cjs", import.meta.url))
+  const flag = `--require ${shim}`
+  const existing = environment.NODE_OPTIONS
+  if (existing && existing.includes("tls-compat-shim")) return existing
+  return existing ? `${flag} ${existing}` : flag
+}
+
 export function apiKeyReference(apiKey) {
   const match = /^\{env:([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(apiKey)
   return match ? { env: match[1] } : { literal: apiKey }
@@ -273,7 +287,10 @@ export function provisionEngineConfig(engineId, config, { stateDir = resolveStat
     }
     if (hasSkills) files.push(...provisionSkills("pi", skills, { stateDir }).files)
     if (hasMcp) files.push(...provisionPiMcp(mcp, { stateDir, repoRoot, warn }).files)
-    if (files.length > 0) addEnv({ PI_CODING_AGENT_DIR: dir })
+    // TLS shim 只为 pi 注入：pi-acp 是纯 Node 子进程（.bin shim 或 npx→node 都会继承 NODE_OPTIONS），
+    // 其 Node 24/OpenSSL 3.5 的 MLKEM768 ClientHello 正是被 api.z.ai CDN 丢弃的那个。与
+    // PI_CODING_AGENT_DIR 同门（files.length > 0）：统一配置路径之外的场景不碰用户环境。
+    if (files.length > 0) addEnv({ PI_CODING_AGENT_DIR: dir, NODE_OPTIONS: nodeOptionsWithTlsShim() })
     return { env, files }
   }
   throw new Error(`provisionEngineConfig: unknown engine '${engineId}'`)
@@ -313,7 +330,13 @@ export function assembleGatewayRuntime(options, config, environment = process.en
   if (!config) return { engineOptions: {} }
   const provisioned = provision(options.engine, config, { stateDir })
   const override = resolveEngineCommand(options.engine, config, environment)
-  const engineOptions = { ...(override ?? {}), ...(Object.keys(provisioned.env).length > 0 ? { env: provisioned.env } : {}) }
+  const engineOptions = {
+    ...(override ?? {}),
+    ...(Object.keys(provisioned.env).length > 0 ? { env: provisioned.env } : {}),
+    // omp 的 ACP 模式不从磁盘 mcp.json 发现 MCP（enableMCP:false），只能由网关（ACP 客户端）经
+    // session/new.mcpServers 下发；pi/opencode 仍走各自的文件供给路径，收到 mcp 也不消费。
+    ...(Object.keys(config.mcp ?? {}).length > 0 ? { mcp: config.mcp } : {})
+  }
   let defaultModel
   if (!options.defaultModelExplicit) {
     const configured = config.engines?.[options.engine]?.model ?? config.model?.default

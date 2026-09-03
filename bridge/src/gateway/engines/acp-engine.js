@@ -13,6 +13,7 @@ import { createPiHistoryLoader } from "../../pi-session-history.js"
 import { createOmpUndoRedoActionStateLoader } from "../../omp-extension-action-state.js"
 import { OMP_EXTENSION_ACTION_PROVIDERS } from "../../extension-actions.js"
 import { normalizeAcpMessages } from "./normalize-acp.js"
+import { buildAcpMcpServers } from "../gateway-capabilities.js"
 
 const ACP_CAPABILITIES = { questions: false, permissions: true, abort: true }
 
@@ -25,7 +26,8 @@ export function createAcpEngine({
   service,
   stateDirectory,
   spawnProcess,
-  permissionBridge
+  permissionBridge,
+  mcp
 } = {}) {
   const baseProfile = harnessProfile(profileId)
   const profile = redirectProfile(baseProfile, env)
@@ -76,7 +78,11 @@ export function createAcpEngine({
     nativeRenameCommand: profile.nativeRenameCommand,
     journalPageWhileOwned: profile.journalPageWhileOwned,
     modelVariantConfigIDs: profile.modelVariantConfigIDs,
-    actionProviders: profile.actionProviders
+    actionProviders: profile.actionProviders,
+    // OMP's ACP mode takes MCP servers exclusively from session/new.mcpServers (its on-disk
+    // mcp.json discovery is disabled with enableMCP: false). PI reads $PI_CODING_AGENT_DIR/mcp.json
+    // through pi-mcp-adapter, so handing it the same list here would mount every server twice.
+    ...(profileId === "omp" ? { mcpServers: buildAcpMcpServers(mcp ?? {}) } : {})
   })
 
   function statusOf(sessionID) {

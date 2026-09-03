@@ -156,6 +156,30 @@ export function buildMcpServersJson(mcp) {
   return { mcpServers: servers }
 }
 
+// ACP session/new.mcpServers 形态，依据安装的 @agentclientprotocol/sdk 1.4.0 v1 类型（dist/schema/
+// types.gen.d.ts）与 omp 端 acp-agent 的实际消费代码双重核对：stdio 变体没有 type 判别字段（omp 以
+// "command" in server 识别），remote 为 { type: "http", url, headers }。env/headers 在 v1 类型中是必填的
+// Array<{name, value}>——omp 端对它做 for...of 迭代（记录形态会直接抛错），空时也必须输出空数组。
+export function buildAcpMcpServers(mcp) {
+  const servers = []
+  for (const [name, server] of Object.entries(mcp)) {
+    servers.push(server.type === "local"
+      ? {
+          name,
+          command: server.command[0],
+          args: server.command.slice(1),
+          env: Object.entries(server.env).map(([key, value]) => ({ name: key, value }))
+        }
+      : {
+          name,
+          type: "http",
+          url: server.url,
+          headers: Object.entries(server.headers).map(([key, value]) => ({ name: key, value }))
+        })
+  }
+  return servers
+}
+
 export function piMcpAdapterEntry(repoRoot, { existsSync = fs.existsSync } = {}) {
   // 入口以包的 package.json（main/exports）为准；候选按常见形态排列，找到即用。
   const pkgDir = path.join(repoRoot, "node_modules", "pi-mcp-adapter")

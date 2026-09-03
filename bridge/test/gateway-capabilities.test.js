@@ -6,7 +6,7 @@ import path from "node:path"
 import os from "node:os"
 import { validateSkills, validateMcp, resolveRepoRoot } from "../src/gateway/gateway-capabilities.js"
 import { provisionSkills, skillTargets } from "../src/gateway/gateway-capabilities.js"
-import { buildOpenCodeMcpSection, buildMcpServersJson, provisionPiMcp, piMcpAdapterEntry } from "../src/gateway/gateway-capabilities.js"
+import { buildOpenCodeMcpSection, buildMcpServersJson, buildAcpMcpServers, provisionPiMcp, piMcpAdapterEntry } from "../src/gateway/gateway-capabilities.js"
 import { piLocalCommand } from "../src/gateway/gateway-capabilities.js"
 
 function withSkill(name, run) {
@@ -152,6 +152,22 @@ test("buildMcpServersJson splits local command arrays and maps remote to http", 
       context7: { type: "http", url: "https://mcp.context7.com/mcp", headers: { Auth: "B x" } }
     }
   })
+})
+
+// ACP session/new.mcpServers（@agentclientprotocol/sdk v1.4.0）：stdio 无 type 判别字段，env/headers
+// 是 {name, value} 数组（omp 端 for...of 迭代），v1 类型必填——空也要输出空数组。
+test("buildAcpMcpServers maps normalized mcp onto the ACP session/new union shape", () => {
+  assert.deepEqual(buildAcpMcpServers(MCP), [
+    { name: "fetch", command: "npx", args: ["-y", "mcp-server-fetch"], env: [{ name: "K", value: "V" }] },
+    { name: "context7", type: "http", url: "https://mcp.context7.com/mcp", headers: [{ name: "Auth", value: "B x" }] }
+  ])
+  assert.deepEqual(buildAcpMcpServers({}), [])
+  assert.deepEqual(buildAcpMcpServers({ solo: { type: "local", command: ["srv"], env: {} } }), [
+    { name: "solo", command: "srv", args: [], env: [] }
+  ])
+  assert.deepEqual(buildAcpMcpServers({ bare: { type: "remote", url: "https://x/mcp", headers: {} } }), [
+    { name: "bare", type: "http", url: "https://x/mcp", headers: [] }
+  ])
 })
 
 test("piMcpAdapterEntry finds the installed adapter entry and misses cleanly", () => {
