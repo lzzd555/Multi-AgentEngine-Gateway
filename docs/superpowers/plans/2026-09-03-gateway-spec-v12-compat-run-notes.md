@@ -71,20 +71,22 @@ curl -s localhost:6219/session/ses_f98e5de29ffeAul7ex4CF7upjo
 说明：directory 的请求注入/SSE 分路发生在引擎转发层（`?directory=<encodeURIComponent(path.resolve(dir))>`），
 无 key 冒烟仅覆盖会话注册面（创建/查询），不触发模型调用；注入与双目录隔离的端到端行为由 §2 真实 key 冒烟覆盖。
 
-## 2. PENDING：真实 key 双目录隔离冒烟（控制器执行）
+## 2. 真实 key 双目录隔离冒烟（控制器执行，2026-09-03 完成）
 
-以下为任务简报中 Step 2 的原始命令，需控制器持有真实 key 执行，子代理不接触 key：
+### 2.1 首轮发现缺陷（已修复）
 
-```bash
-export ZAI_API_KEY=<控制器持有>
-mkdir -p /tmp/v12-dirA /tmp/v12-dirB
-node bridge/src/gateway/main.js --engine opencode --port 6217 &
-# 经网关（非裸 opencode API）：
-# 1) POST /session {"directory":"/tmp/v12-dirA"}（无 title）→ 记 id
-# 2) SSE 后台收流；POST prompt_async "在当前工作目录创建 a.txt 内容 ok"
-# 3) 等 SSE session.idle；断言 /tmp/v12-dirA/a.txt 存在、SSE 收到 message.part.updated
-# 4) 同法第二会话绑 /tmp/v12-dirB → b.txt 落 dirB；两目录互不串扰
-# 5) rehearsal（默认目录）10/10 回归
-```
+首轮冒烟暴露一个隐蔽缺陷：目录作用域会话的 **busy 态只出现在 `/session/status?directory=` 作用域查询中**（无作用域 status 恒显 idle——规格 §3.2 的"实测可命中"假设只对 idle 成立）。后果：`waitUntilIdle` 无作用域轮询 2 秒宽限后假完成 → `prompt_async` 提前 204（实测 2.08s 即返回，而回合仍在后台执行，文件数十秒后才落地）。修复（commit `e964723`）：`waitUntilIdle` 对映射会话轮询作用域 status（`statusPath` 辅助）；`listSessionStatuses` 聚合无作用域 + 各目录作用域结果（作用域值优先），网关 `GET /session/status` 对目录会话不再误报 idle。实证：修复后真实回合期间作用域 status 持续 busy 18+ 次轮询、无作用域恒 idle。
 
-执行完成后请在本节回填实测结果（各步断言输出、rehearsal 计数）。
+### 2.2 修复后复验（全部通过）
+
+| 验证项 | 结果 |
+|---|---|
+| 会话 A（dirA，无 title，三步建文件任务） | ✅ prompt **真实阻塞 13.0s** 至回合完成（不再 2 秒假返回），a1/a2/a3.txt 即时落 `/tmp/v12-dirA` |
+| 会话 B（dirB，两步建文件任务） | ✅ b1/b2.txt 落 `/tmp/v12-dirB`；轨迹完整（write×2 → 工具结果 → 总结文本） |
+| busy 聚合 | ✅ B 回合进行中网关 `GET /session/status` 正确显示 `busy`（修复前会误显 idle） |
+| 目录隔离 | ✅ dirA 仅 a1-a3、dirB 仅 b1-b2，互不串扰 |
+| SSE 分路 | ✅ 两会话事件均经网关 `/event` 正常推送（message.part.updated/session.idle） |
+| rehearsal 回归（默认目录） | ✅ **10/10**（6.6s） |
+| title 自动生成（真 key 环境） | ✅ `会话-<yyyyMMdd-HHmmss>` 形态回填 |
+
+测试套件随修复 153 → **155**（新增作用域轮询等待与状态聚合用例），全绿。
