@@ -1,0 +1,14 @@
+{
+  "tasks": [
+    {
+      "task_id": "office_132",
+      "title": "分析一下D:\\test_data…",
+      "description": "分析docx文件，将表格导出为Excel，多表分sheet保存",
+      "query": "分析一下D:\\test_data\\华为2025手机.docx文件，将这个文件中的表格导出，并保存为D:/test_data_备份/华为2025手机-sheet.xlsx，如果包含多个表格，你需要将这几个表格放到excel中的不同sheet中。",
+      "category": "文档操作与数据分析类",
+      "secondary_category": "文档格式转换",
+      "difficulty": 3,
+      "difficulty_label": "中"
+    }
+  ]
+}

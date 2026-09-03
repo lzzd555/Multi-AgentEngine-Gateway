@@ -1,0 +1,14 @@
+{
+  "tasks": [
+    {
+      "task_id": "office_139",
+      "title": "收集分析自动驾驶资讯",
+      "description": "收集并分析自动驾驶领域的最新资讯和动态",
+      "query": "请收集并分析自动驾驶领域的最新资讯和动态",
+      "category": "信息检索与知识问答类",
+      "secondary_category": "信息检索、调研与综述",
+      "difficulty": 3,
+      "difficulty_label": "中"
+    }
+  ]
+}

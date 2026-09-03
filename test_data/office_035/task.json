@@ -1,0 +1,14 @@
+{
+  "tasks": [
+    {
+      "task_id": "office_035",
+      "title": "生成OpenClaw介绍PPT",
+      "description": "生成一份不超过5页的OpenClaw介绍PPT，含核心功能与架构等内容",
+      "query": "请输出一份关于openclaw介绍的PPT，主要内容包含基本介绍、核心功能、核心架构、部署方式、部署依赖等，总共不超过5页，不必向我确认PPT大纲内容，PPT请保存到D:\\test_data\\openclaw.pptx",
+      "category": "文档操作与数据分析类",
+      "secondary_category": "文档生成",
+      "difficulty": 3,
+      "difficulty_label": "中"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "tasks": [
+    {
+      "task_id": "office_014",
+      "title": "数据分析结论1",
+      "description": "基于task.csv做违约风险分析，输出含风险特征、建议和样本表的Markdown报告",
+      "query": "请基于 D:\\test_data\\task.csv 做一次违约风险分析，重点看 credit_score、debt_ratio、late_payments、loan_amount 与 defaulted 的关系。请输出一份中文 Markdown 结论稿，至少包含高风险特征、低风险特征、3 条可执行建议，以及一个按风险高低排序的样本观察表，保存为 task_违约风险分析.md。",
+      "category": "文档操作与数据分析类",
+      "secondary_category": "数据处理与分析",
+      "difficulty": 4,
+      "difficulty_label": "较难"
+    }
+  ]
+}

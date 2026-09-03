@@ -1,0 +1,14 @@
+{
+  "tasks": [
+    {
+      "task_id": "office_103",
+      "title": "删除文件",
+      "description": "删除指定目录及子目录下文件名含\"西安\"的所有文件",
+      "query": "删除D:/test_data目录及其子目录下所有文件名包含 “西安”的文件",
+      "category": "系统配置、文件管理类",
+      "secondary_category": "文件管理（创建、读取、移动、复制、删除）",
+      "difficulty": 3,
+      "difficulty_label": "中"
+    }
+  ]
+}

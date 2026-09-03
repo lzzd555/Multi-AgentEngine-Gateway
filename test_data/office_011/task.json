@@ -1,0 +1,14 @@
+{
+  "tasks": [
+    {
+      "task_id": "office_011",
+      "title": "文档润色改写1",
+      "description": "润色OpenClaw报告执行摘要为正式汇报风格，保留关键数据，另存为新docx",
+      "query": "请打开 D:\\test_data\\OpenClaw学术洞察报告.docx，把“执行摘要”中介绍 OpenClaw 影响力和行业采用情况的两段文字改写成更克制、正式、适合内部研究汇报的表述。不要改动事实信息和章节结构，保留 GitHub Stars、MIT、自托管、主流云厂商采用等关键信息，并另存为同目录下的 OpenClaw学术洞察报告_执行摘要润色版.docx。",
+      "category": "文档操作与数据分析类",
+      "secondary_category": "文档润色",
+      "difficulty": 3,
+      "difficulty_label": "中"
+    }
+  ]
+}

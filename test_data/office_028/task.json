@@ -1,0 +1,14 @@
+{
+  "tasks": [
+    {
+      "task_id": "office_028",
+      "title": "发送WeLink测试消息",
+      "description": "给指定工号发一条测试消息",
+      "query": "给y00942037发一条消息：你好，正在进行agent测试",
+      "category": "办公协作、沟通与日程管理类",
+      "secondary_category": "即时通讯",
+      "difficulty": 1,
+      "difficulty_label": "极易"
+    }
+  ]
+}

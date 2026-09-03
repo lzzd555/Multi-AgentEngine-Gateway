@@ -1,0 +1,14 @@
+{
+  "tasks": [
+    {
+      "task_id": "office_015",
+      "title": "数据分析结论2",
+      "description": "基于task.csv做多字段客户分层分析，输出500-800字违约特征分析短报",
+      "query": "请分析 D:\\test_data\\task.csv，从 age、income、monthly_spend、debt_ratio 四个字段出发做客户分层，判断哪些组合更容易出现 defaulted=1。不要只给均值，请补充分层口径、异常样本观察和可能的业务含义，最终写成一份 500 到 800 字的中文分析短报，保存为 task_客户分层与违约特征分析.md。",
+      "category": "文档操作与数据分析类",
+      "secondary_category": "数据处理与分析",
+      "difficulty": 4,
+      "difficulty_label": "较难"
+    }
+  ]
+}
