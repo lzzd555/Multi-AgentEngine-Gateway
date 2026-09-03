@@ -50,12 +50,13 @@ export function createGatewayServer({
 
       if (method === "POST" && path === "/session") {
         const body = await readBody(request)
-        if (typeof body.title !== "string" || !body.title.trim()) {
-          return sendError(response, 400, "VALIDATION_ERROR", "title is required")
-        }
-        const directory = url.searchParams.get("directory") ?? undefined
-        const { id } = await engine.createSession({ title: body.title, directory })
-        const record = registry.register({ id, title: body.title })
+        // 通用规范 1.2：title 可选（缺省自动生成）；directory 在 body（query 为兼容回落）
+        const rawTitle = typeof body.title === "string" ? body.title.trim() : ""
+        const title = rawTitle || `会话-${new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14).replace(/^(\d{8})(\d{6})$/, "$1-$2")}`
+        const bodyDirectory = typeof body.directory === "string" && body.directory.trim() ? body.directory : undefined
+        const directory = bodyDirectory ?? url.searchParams.get("directory") ?? undefined
+        const { id } = await engine.createSession({ title, directory })
+        const record = registry.register({ id, title })
         return writeJSON(response, 200, record)
       }
 

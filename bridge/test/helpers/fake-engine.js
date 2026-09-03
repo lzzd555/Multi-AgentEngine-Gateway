@@ -8,14 +8,17 @@ export function createFakeEngine(overrides = {}) {
   const statuses = new Map()
   let counter = 0
   let promptHandler = async () => {}
+  const createdSessions = []
   const engine = {
     id: "fake",
     label: "Fake",
     capabilities: { questions: false, permissions: false, abort: true },
     initialize: async () => {},
     dispose: async () => {},
-    async createSession({ title } = {}) {
+    createdSessions,
+    async createSession({ title, directory } = {}) {
       const id = `ses_${++counter}`
+      createdSessions.push({ title, directory })
       sessions.set(id, { title })
       messages.set(id, [])
       statuses.set(id, { type: "idle" })
