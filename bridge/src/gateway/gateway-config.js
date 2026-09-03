@@ -4,6 +4,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { homedir } from "node:os"
+import { validateSkills, validateMcp } from "./gateway-capabilities.js"
 
 const ENGINE_IDS = ["opencode", "omp", "pi"]
 const ALLOWED_APIS = ["openai-completions", "openai-responses", "anthropic-messages"]
@@ -121,7 +122,13 @@ export function validateGatewayConfig(parsed, sourcePath) {
   for (const [id, engine] of Object.entries(engines)) {
     if (engine.command !== undefined) engines[id] = { ...engine, command: expandHome(engine.command) }
   }
-  return { model: { providers, default: defaultModel }, engines, warnings }
+  return {
+    model: { providers, default: defaultModel },
+    engines,
+    skills: validateSkills(parsed.skills, sourcePath),
+    mcp: validateMcp(parsed.mcp, sourcePath),
+    warnings
+  }
 }
 
 export function loadGatewayConfig({ configPath, environment = process.env, cwd = process.cwd(), readFile = readConfigFile, existsSync = fs.existsSync } = {}) {

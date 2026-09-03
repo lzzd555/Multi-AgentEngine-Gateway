@@ -142,6 +142,18 @@ test("empty providers config loads without default", () => {
   })
 })
 
+test("config carries validated skills and mcp sections", () => {
+  withTempConfig({
+    skills: [],
+    mcp: { fetch: { type: "local", command: ["npx", "-y", "mcp-server-fetch"] } },
+    engines: {}
+  }, (file) => {
+    const loaded = loadGatewayConfig({ configPath: file })
+    assert.deepEqual(loaded.skills, [])
+    assert.deepEqual(loaded.mcp.fetch, { type: "local", command: ["npx", "-y", "mcp-server-fetch"], env: {} })
+  })
+})
+
 const MODEL = {
   providers: {
     zaicoding: {
