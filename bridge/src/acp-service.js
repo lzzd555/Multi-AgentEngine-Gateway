@@ -463,6 +463,7 @@ export class AcpService {
   #nativeRenameCommand
   #journalPageWhileOwned
   #modelVariantConfigIDs
+  #mcpServers
   constructor(acp, {
     snapshotDirectory,
     historyLoader,
@@ -489,7 +490,16 @@ export class AcpService {
      * id the running adapter actually advertised.
      */
     modelVariantConfigIDs = [],
-    actionProviders = []
+    actionProviders = [],
+    /**
+     * MCP servers to hand the harness in `session/new.mcpServers` (@agentclientprotocol/sdk v1
+     * shape: stdio { name, command, args, env: Array<{name, value}> }, http { name, type: "http",
+     * url, headers: Array<{name, value}> }). OMP's ACP mode disables its on-disk mcp.json
+     * discovery (enableMCP: false) and takes servers exclusively from this ACP-client field;
+     * harnesses that discover their own MCP (PI via pi-mcp-adapter) must be given [] so the same
+     * server is not mounted twice.
+     */
+    mcpServers = []
   } = {}) {
     this.#acp = acp
     this.#snapshotDirectory = snapshotDirectory
@@ -502,6 +512,7 @@ export class AcpService {
     this.#journalPageWhileOwned = journalPageWhileOwned
     this.#modelVariantConfigIDs = modelVariantConfigIDs
     this.#actionProviders = actionProviders
+    this.#mcpServers = mcpServers
     acp.on("notification", (notification) => this.#handleNotification(notification))
   }
 
@@ -567,7 +578,7 @@ export class AcpService {
 
   async createSession({ directory, title, model }) {
     await this.#acp.start()
-    const result = await this.#acp.request("session/new", { cwd: directory, mcpServers: [] })
+    const result = await this.#acp.request("session/new", { cwd: directory, mcpServers: this.#mcpServers })
     this.#acpOpenSessions.add(result.sessionId)
     this.#rememberConfigOptions(result.sessionId, result.configOptions)
     const session = {
@@ -1665,7 +1676,7 @@ export class AcpService {
     this.#chunkMessageIDs.delete(`${sessionID}:user`)
     this.#chunkMessageIDs.delete(`${sessionID}:assistant`)
     try {
-      const result = await this.#acp.request("session/load", { sessionId: sessionID, cwd: session.cwd, mcpServers: [] }, 300_000)
+      const result = await this.#acp.request("session/load", { sessionId: sessionID, cwd: session.cwd, mcpServers: this.#mcpServers }, 300_000)
       this.#acpOpenSessions.add(sessionID)
       if (this.#historyLoader?.claimOnLoad) this.#ownedSessions.add(sessionID)
       // PI can resolve session/load just before its final replay notifications drain from stdout,
@@ -1729,7 +1740,7 @@ export class AcpService {
     if (!this.#acp.sessionCapabilities?.resume) return false
     const result = await this.#acp.request(
       "session/resume",
-      { sessionId: sessionID, cwd: session.cwd, mcpServers: [] },
+      { sessionId: sessionID, cwd: session.cwd, mcpServers: this.#mcpServers },
       300_000
     )
     this.#acpOpenSessions.add(sessionID)

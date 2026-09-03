@@ -6,7 +6,7 @@
 2. 安装引擎（按需，评测哪个引擎装哪个）：
    - OpenCode：`npm install -g opencode`
    - OMP：`npm install -g oh-my-pi`（提供 `omp` 命令，含 `omp acp` 模式）
-   - PI：无需单独安装 `pi`，适配器经 `npx --package=@automatalabs/pi-acp pi-acp` 拉起（首次会下载）
+   - PI：`npm install` 本地化（可选；未装时 npx 兜底）
 3. GLM5.2 配置（推荐：网关统一配置）：设置环境变量 `ZAI_API_KEY=<你的key>`（必填，配置中经 `{env:ZAI_API_KEY}` 引用），并在启动目录提供 `gateway.config.json`——完整示例见仓库根 `gateway.config.example.json`，最小配置如下（网关按 `--config <路径>` > 环境变量 `GATEWAY_CONFIG` > 启动目录 `./gateway.config.json` 的顺序自动发现）：
 
    ```json
@@ -28,7 +28,7 @@
 
    `baseUrl` 需与密钥类型匹配：GLM Coding 订阅 key 用 `https://api.z.ai/api/coding/paas/v4`（上例默认；订阅 key 在标准 paas 端点一律 429），智谱按量付费 key 改为 `https://api.z.ai/api/paas/v4`（详见 `code/solution/config-templates/README.md` 第 4 节）。网关启动时自动在 `~/.multi-agentengine-gateway/` 下为所选引擎生成隔离配置并注入，**无需手工修改各引擎配置文件**。Windows 下持久生效用 `setx ZAI_API_KEY <key>`（需新开一个终端窗口才对后续进程生效）；仅当前会话生效用 PowerShell 的 `$env:ZAI_API_KEY = "<key>"`（或 cmd 的 `set ZAI_API_KEY=<key>`）；macOS/Linux 用 `export ZAI_API_KEY=<key>`。
    可选路径（引擎侧直配）：不走统一配置时，按 `code/solution/config-templates/README.md` 的「引擎侧直配（可选）」把 provider 配置并入对应引擎，并以 `GATEWAY_DEFAULT_MODEL=zaicoding/glm-5.2` 启动网关；默认端点 `https://api.z.ai/api/paas/v4` 已直接写入模板，自定义端点时导出 `ZAI_BASE_URL=<自定义地址>` 并把配置中 `baseURL` 一行手工改为该值（网关与引擎都不会自动展开该变量）。
-4. 依赖安装：无第三方 npm 依赖，无需 `npm install`。
+4. 依赖安装：可选 `npm install`——本地化 PI（`@automatalabs/pi-acp`）与 `pi-mcp-adapter`（optionalDependencies，离线/安装失败不阻断）；未安装时 PI 适配器经 npx 拉起（首跑会下载、较慢），OpenCode/OMP 不受影响，网关核心仍零依赖。
 
 ## 执行方式
 

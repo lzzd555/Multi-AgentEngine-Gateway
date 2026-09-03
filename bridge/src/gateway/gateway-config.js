@@ -4,6 +4,8 @@
 import fs from "node:fs"
 import path from "node:path"
 import { homedir } from "node:os"
+import { fileURLToPath } from "node:url"
+import { validateSkills, validateMcp, provisionSkills, provisionPiMcp, buildOpenCodeMcpSection, buildMcpServersJson, resolveRepoRoot, piLocalCommand } from "./gateway-capabilities.js"
 
 const ENGINE_IDS = ["opencode", "omp", "pi"]
 const ALLOWED_APIS = ["openai-completions", "openai-responses", "anthropic-messages"]
@@ -121,7 +123,13 @@ export function validateGatewayConfig(parsed, sourcePath) {
   for (const [id, engine] of Object.entries(engines)) {
     if (engine.command !== undefined) engines[id] = { ...engine, command: expandHome(engine.command) }
   }
-  return { model: { providers, default: defaultModel }, engines, warnings }
+  return {
+    model: { providers, default: defaultModel },
+    engines,
+    skills: validateSkills(parsed.skills, sourcePath),
+    mcp: validateMcp(parsed.mcp, sourcePath),
+    warnings
+  }
 }
 
 export function loadGatewayConfig({ configPath, environment = process.env, cwd = process.cwd(), readFile = readConfigFile, existsSync = fs.existsSync } = {}) {
@@ -133,6 +141,19 @@ export function loadGatewayConfig({ configPath, environment = process.env, cwd =
 
 export function resolveStateDir(environment = process.env) {
   return expandHome(environment.GATEWAY_STATE_DIR ?? path.join(homedir(), DEFAULT_STATE_DIRNAME))
+}
+
+// api.z.ai 平台升级后的 CDN 会静默丢弃携带 X25519MLKEM768 key share 的 TLS ClientHello（Node 24 /
+// OpenSSL 3.5 默认发送），纯 Node 的 pi 子进程（pi-acp）因此每次模型调用都 "Request timed out"；
+// curl/Bun 引擎不受影响。给子进程的 NODE_OPTIONS 前置 --require tls-compat-shim.cjs，限定经典曲线
+// 组即可恢复握手。NODE_OPTIONS 自 Node 12.16 起支持双引号包裹的取值，路径用双引号包起来后，
+// 含空格的仓库路径也能经它正确传递，故按 `--require "<path>"` 形式拼接。
+export function nodeOptionsWithTlsShim(environment = process.env) {
+  const shim = fileURLToPath(new URL("../tls-compat-shim.cjs", import.meta.url))
+  const flag = `--require "${shim}"`
+  const existing = environment.NODE_OPTIONS
+  if (existing && existing.includes("tls-compat-shim")) return existing
+  return existing ? `${flag} ${existing}` : flag
 }
 
 export function apiKeyReference(apiKey) {
@@ -203,31 +224,76 @@ function ompConfigDirName(stateDir, home = homedir()) {
   return relative.split(path.sep).join("/")
 }
 
-export function provisionEngineConfig(engineId, config, { stateDir = resolveStateDir(), mkdirSync = fs.mkdirSync, writeFileSync = fs.writeFileSync } = {}) {
-  const providers = config?.model?.providers
-  if (!providers || Object.keys(providers).length === 0) return { env: {}, files: [] }
+export function provisionEngineConfig(engineId, config, { stateDir = resolveStateDir(), mkdirSync = fs.mkdirSync, writeFileSync = fs.writeFileSync, repoRoot = resolveRepoRoot(), warn = (message) => process.stderr.write(`gateway config warning: ${message}\n`) } = {}) {
+  const providers = config?.model?.providers ?? {}
+  const hasProviders = Object.keys(providers).length > 0
+  const skills = config?.skills ?? []
+  const hasSkills = skills.length > 0
+  const mcp = config?.mcp ?? {}
+  const hasMcp = Object.keys(mcp).length > 0
+  if (!hasProviders && !hasSkills && !hasMcp) return { env: {}, files: [] }
+  const files = []
+  const env = {}
+  const addEnv = (entries) => Object.assign(env, entries)
   if (engineId === "opencode") {
-    const dir = path.join(stateDir, "opencode")
-    const file = path.join(dir, "opencode.json")
-    // 生成文件可能含明文 API key，目录与文件都必须仅属主可读写。
-    mkdirSync(dir, { recursive: true, mode: 0o700 })
-    writeFileSync(file, `${JSON.stringify(buildOpenCodeProviderConfig(config.model), null, 2)}\n`, { mode: 0o600 })
-    return { env: { OPENCODE_CONFIG: file }, files: [file] }
+    if (hasProviders || hasMcp) {
+      const dir = path.join(stateDir, "opencode")
+      const file = path.join(dir, "opencode.json")
+      // 生成文件可能含明文 API key，目录与文件都必须仅属主可读写。
+      mkdirSync(dir, { recursive: true, mode: 0o700 })
+      const content = {
+        // 直调形态下 config.model 可完全缺失（loadGatewayConfig 保证存在）；mcp-only 时
+        // 不能让 buildOpenCodeProviderConfig(undefined) 抛错，provider 段仅在非空时并入。
+        ...(hasProviders ? { ...buildOpenCodeProviderConfig(config.model) } : {}),
+        ...(hasMcp ? { mcp: buildOpenCodeMcpSection(mcp) } : {})
+      }
+      writeFileSync(file, `${JSON.stringify(content, null, 2)}\n`, { mode: 0o600 })
+      files.push(file)
+      addEnv({ OPENCODE_CONFIG: file })
+    }
+    if (hasSkills) {
+      files.push(...provisionSkills("opencode", skills, { stateDir }).files)
+      // OpenCode 全局 skills 从 XDG 配置目录发现；只重定向 XDG_CONFIG_HOME，auth/数据（XDG_DATA_HOME）不动。
+      addEnv({ XDG_CONFIG_HOME: path.join(stateDir, "opencode", "xdg") })
+    }
+    return { env, files }
   }
   if (engineId === "omp") {
     const dir = path.join(stateDir, "omp", "agent")
-    const file = path.join(dir, "models.yml")
-    mkdirSync(dir, { recursive: true, mode: 0o700 })
-    writeFileSync(file, buildOmpModelsYaml(config.model), { mode: 0o600 })
-    // OMP 配置根 = join(homedir(), PI_CONFIG_DIR)，生成文件在其 agent/ 子目录，故相对名需含 /omp。
-    return { env: { PI_CONFIG_DIR: `${ompConfigDirName(stateDir)}/omp` }, files: [file] }
+    if (hasProviders) {
+      mkdirSync(dir, { recursive: true, mode: 0o700 })
+      const file = path.join(dir, "models.yml")
+      writeFileSync(file, buildOmpModelsYaml(config.model), { mode: 0o600 })
+      files.push(file)
+    }
+    if (hasSkills) files.push(...provisionSkills("omp", skills, { stateDir }).files)
+    if (hasMcp) {
+      mkdirSync(dir, { recursive: true, mode: 0o700 })
+      const file = path.join(dir, "mcp.json")
+      writeFileSync(file, `${JSON.stringify(buildMcpServersJson(mcp), null, 2)}\n`, { mode: 0o600 })
+      files.push(file)
+    }
+    if (files.length > 0) {
+      // OMP 配置根 = join(homedir(), PI_CONFIG_DIR)，生成文件在其 agent/ 子目录，故相对名需含 /omp。
+      addEnv({ PI_CONFIG_DIR: `${ompConfigDirName(stateDir)}/omp` })
+    }
+    return { env, files }
   }
   if (engineId === "pi") {
     const dir = path.join(stateDir, "pi", "agent")
-    const file = path.join(dir, "models.json")
-    mkdirSync(dir, { recursive: true, mode: 0o700 })
-    writeFileSync(file, `${JSON.stringify(buildPiModelsJson(config.model), null, 2)}\n`, { mode: 0o600 })
-    return { env: { PI_CODING_AGENT_DIR: dir }, files: [file] }
+    if (hasProviders) {
+      mkdirSync(dir, { recursive: true, mode: 0o700 })
+      const file = path.join(dir, "models.json")
+      writeFileSync(file, `${JSON.stringify(buildPiModelsJson(config.model), null, 2)}\n`, { mode: 0o600 })
+      files.push(file)
+    }
+    if (hasSkills) files.push(...provisionSkills("pi", skills, { stateDir }).files)
+    if (hasMcp) files.push(...provisionPiMcp(mcp, { stateDir, repoRoot, warn }).files)
+    // TLS shim 只为 pi 注入：pi-acp 是纯 Node 子进程（.bin shim 或 npx→node 都会继承 NODE_OPTIONS），
+    // 其 Node 24/OpenSSL 3.5 的 MLKEM768 ClientHello 正是被 api.z.ai CDN 丢弃的那个。与
+    // PI_CODING_AGENT_DIR 同门（files.length > 0）：统一配置路径之外的场景不碰用户环境。
+    if (files.length > 0) addEnv({ PI_CODING_AGENT_DIR: dir, NODE_OPTIONS: nodeOptionsWithTlsShim() })
+    return { env, files }
   }
   throw new Error(`provisionEngineConfig: unknown engine '${engineId}'`)
 }
@@ -244,9 +310,15 @@ export function missingApiKeyEnvWarnings(config, environment = process.env) {
   return warnings
 }
 
-export function resolveEngineCommand(engineId, config, environment = process.env, { existsSync = fs.existsSync } = {}) {
+export function resolveEngineCommand(engineId, config, environment = process.env, { existsSync = fs.existsSync, repoRoot = resolveRepoRoot() } = {}) {
   const engine = config?.engines?.[engineId]
-  if (!engine?.command) return null
+  if (!engine?.command) {
+    if (engineId === "pi") {
+      const local = piLocalCommand(repoRoot)
+      if (local) return local
+    }
+    return null
+  }
   const command = engine.command // validateGatewayConfig 已做 ~ 展开
   if (path.isAbsolute(command) && !existsSync(command)) {
     throw new Error(`engines.${engineId}.command not found: ${command}`)
@@ -260,7 +332,13 @@ export function assembleGatewayRuntime(options, config, environment = process.en
   if (!config) return { engineOptions: {} }
   const provisioned = provision(options.engine, config, { stateDir })
   const override = resolveEngineCommand(options.engine, config, environment)
-  const engineOptions = { ...(override ?? {}), ...(Object.keys(provisioned.env).length > 0 ? { env: provisioned.env } : {}) }
+  const engineOptions = {
+    ...(override ?? {}),
+    ...(Object.keys(provisioned.env).length > 0 ? { env: provisioned.env } : {}),
+    // omp 的 ACP 模式不从磁盘 mcp.json 发现 MCP（enableMCP:false），只能由网关（ACP 客户端）经
+    // session/new.mcpServers 下发；pi/opencode 仍走各自的文件供给路径，收到 mcp 也不消费。
+    ...(Object.keys(config.mcp ?? {}).length > 0 ? { mcp: config.mcp } : {})
+  }
   let defaultModel
   if (!options.defaultModelExplicit) {
     const configured = config.engines?.[options.engine]?.model ?? config.model?.default

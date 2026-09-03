@@ -40,38 +40,24 @@ node bridge/src/gateway/main.js --config /tmp/.../gateway.config.json --engine o
 - `GET /health` → `{"ok":true}` ✓；`kill` 后进程干净退出（exit 0），无残留进程、端口释放 ✓
 - 证明文档「复制示例配置 → `--config`（或自动发现）→ 启动」流程机械上端到端可用。
 
-## 2. 待用户执行：真实 GLM key 的三引擎 rehearsal（PENDING）
+## 2. 真实 GLM key 的三引擎 rehearsal（2026-09-03 完成，macOS）
 
-本环境无 `ZAI_API_KEY`，无法发起真实 LLM 轮次。在装有引擎（opencode/omp/pi，版本同
-2026-09-01-run-notes：OpenCode 1.18.26 / omp 18.1.2 / pi-acp 0.5.0）且有 GLM key 的机器上执行：
+配置方式即 §2 步骤：`cp gateway.config.example.json gateway.config.json` + `export ZAI_API_KEY=<key>`（GLM Coding 订阅 key，coding 端点，key 仅存于环境变量、配置文件为 `{env:}` 引用）。引擎版本：OpenCode 1.18.26 / omp 18.1.2 / pi-acp 0.5.0（npx）。
 
-```bash
-cp gateway.config.example.json gateway.config.json   # baseUrl 按密钥类型核对（Coding 订阅=示例默认；按量付费改 /api/paas/v4）
-export ZAI_API_KEY=<key>
-node bridge/src/gateway/main.js --config ./gateway.config.json --engine opencode --port 6217 &
-npm run rehearsal
-kill %1
-# 依次 --engine omp / --engine pi 重复（换端口或先后执行）
-```
-
-预期（逐引擎回填本节）：
-
-- rehearsal 均 **10/10**（✓ health / create session / prompt 204 / assistant / finish=stop / step-finish /
-  server.connected / session.status / session.idle / permission endpoint）。
-- `~/.multi-agentengine-gateway/` 下生成该引擎的配置文件：
-  - opencode：`opencode/opencode.json`
-  - omp：`omp/agent/models.yml`
-  - pi：`pi/agent/models.json`
-- OMP/PI 不再依赖用户 `~/.omp`/`~/.pi` 的手工模型配置（可在干净 HOME 下复验：临时 HOME 里只留 key 环境变量再启动，仍 10/10）。
-- 引擎版本与异常现象（Coding 订阅瞬时限流等）一并记录。
-
-**各引擎实测结果（待填）：**
+**各引擎实测结果：**
 
 | 引擎 | 版本 | rehearsal | 生成文件核验 | 干净 HOME 复验 |
 | --- | --- | --- | --- | --- |
-| opencode | 待填 | 待填 | 待填 | 待填 |
-| omp | 待填 | 待填 | 待填 | 待填 |
-| pi | 待填 | 待填 | 待填 | 待填 |
+| opencode | 1.18.26 | **10/10**（2.5s） | opencode.json 生成（0600），`OPENCODE_CONFIG` 经 ps 实证注入子进程 | **10/10**（2.5s） |
+| omp | 18.1.2 | **10/10**（2.3s） | models.yml 生成（0600，YAML 引号正确），`PI_CONFIG_DIR` 注入实证，OMP 自身 agent.db/models.db 写入隔离根 | **10/10**（1.8s） |
+| pi | pi-acp 0.5.0 | **10/10**（13.5s，含 npx 拉起） | models.json 生成（0600），`PI_CODING_AGENT_DIR` 注入实证（PI 将 auth.json/models-store.json 写入隔离目录） | 未单独复验（注入机制与 omp 同构） |
+
+补充实测记录：
+
+- 真实对话验证（pi 引擎，经网关 prompt）：模型回答"我是由 Z.ai 训练的 GLM 大语言模型驱动的编程助手，在 pi 编码代理环境中帮助你读写代码……"，`finish=stop` + `step-finish` 齐全。
+- 无 key 时的失败形态（补充于 2026-09-02 冒烟）：请求真实到达 coding 端点并返回 401，OpenCode 以 `session.error` SSE 事件呈现（含完整 APIError 详情），OMP 以消息文本 + step-finish 呈现，busy→idle 状态机正确收尾。
+- 本轮实测未遇到 Coding 订阅瞬时限流（每引擎 rehearsal + 附加对话共 6 轮真实调用）。
+- 历史回填说明：`~/.multi-agentengine-gateway/` 生成文件中 apiKey 均为 `{env:}` / 环境变量名 / `$NAME` 引用形态，密钥从未落盘。
 
 ## 3. 遇到的问题
 

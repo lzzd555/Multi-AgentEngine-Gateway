@@ -4,7 +4,7 @@
 
 ## 网关统一配置（推荐）
 
-推荐用网关统一配置 `gateway.config.json` 一处声明模型 provider 与各引擎选项：网关启动时校验配置、自动生成三引擎的隔离配置文件并注入对应引擎，无需按下文逐引擎手工并入。完整示例见仓库根 `gateway.config.example.json`（复制为 `gateway.config.json` 后按需修改）：
+推荐用网关统一配置 `gateway.config.json` 一处声明模型 provider、能力供给（skills/mcp，可选）与各引擎选项：网关启动时校验配置、自动生成三引擎的隔离配置文件并注入对应引擎，无需按下文逐引擎手工并入。完整示例见仓库根 `gateway.config.example.json`（复制为 `gateway.config.json` 后按需修改）：
 
 ```json
 {
@@ -18,6 +18,10 @@
       }
     },
     "default": "zaicoding/glm-5.2"
+  },
+  "skills": ["./skills/demo-skill"],
+  "mcp": {
+    "memory": { "type": "local", "command": ["npx", "-y", "@modelcontextprotocol/server-memory"] }
   },
   "engines": { "opencode": {}, "omp": {}, "pi": {} }
 }
@@ -41,9 +45,34 @@
 - `model.providers.<id>.apiKey`：明文密钥，或 `{env:NAME}` 引用环境变量（OMP 侧写入环境变量名、PI 侧转写为 `$NAME`、OpenCode 保留 `{env:NAME}` 原样由其运行时解析；引用的变量未设置时网关启动告警）。
 - `model.providers.<id>.api`：`openai-completions` / `openai-responses` / `anthropic-messages` 三选一。
 - `model.providers.<id>.models`：模型 id → 显示名的对象；`model.default` 为默认模型（`providerID/modelID` 形式，有 providers 时必填）。
+- `skills`（可选）：字符串数组，每项为 skill 目录（内含 `SKILL.md`，可有伴随文件）或单个 `SKILL.md` 文件路径；支持 `~` 展开，相对路径相对**配置文件所在目录**解析。详见下节「能力供给」。
+- `mcp`（可选）：对象，key 为 server 名，值分 `local`（`command` 完整数组 + 可选 `env`）/ `remote`（http(s) `url` + 可选 `headers`）两种形态。详见下节「能力供给」。
 - `engines.<id>`（可选）：`command` 覆盖该引擎启动命令（支持 `~`，绝对路径不存在则启动报错）、`args` 追加启动参数（OMP 会自动补 `acp` 子命令）、`model` 为该引擎单独指定默认模型。
 - 默认模型优先级：`--model` / `GATEWAY_DEFAULT_MODEL` 显式指定 > `engines.<id>.model` > `model.default`。
 - provider id 建议用独立名（如 `zaicoding`）：OMP/PI 内置 `zai`/`zhipu`/`bigmodel`/`glm` provider 家族，撞名时网关启动告警提示。
+
+### 能力供给（skills / mcp，可选）
+
+统一配置可在模型之外一并声明**技能**与 **MCP server**：网关 provision 时把它们同步到所选引擎**正在读取的隔离位置**，引擎按各自原生机制发现（网关不改造引擎、不解析 SKILL.md frontmatter），隔离注入下用户已有 `~/.config/opencode/`、`~/.omp/`、`~/.pi/` 里的 skill 不受影响也不被使用（设计细节见 `docs/superpowers/specs/2026-09-03-unified-skills-mcp-design.md`）。
+
+- **skills 路径引用与目录名规则**：每项为 skill 目录（内含 `SKILL.md`）或单个 `SKILL.md` 文件路径；支持 `~` 展开，相对路径相对配置文件所在目录。skill 名 = 目录名（直引文件时 = 其父目录名，文件名本身固定为 `SKILL.md` 不能作名字来源），须匹配 `[a-z0-9][a-z0-9-]*` 且列表内唯一。frontmatter 原样复制，由各引擎按各自规则解析（OpenCode 要求 frontmatter `name` 与目录名一致——由 skill 作者保证，不一致时仅该 skill 报错）。
+- **复制语义**：每次启动**复制**（非符号链接，Windows 无特权符号链接会 EPERM）并幂等重同步——按 skill 清理重建各自目标目录 `<目标>/skills/<name>/`（非整棵 skills 根），源目录删除后目标不残留；SKILL.md 的伴随文件（参考文件、脚本等）随整目录一并复制。
+- **mcp 形态**：`local` 为 `command` 完整数组（首元素可执行文件、其余为参数，元素均非空字符串）+ 可选 `env`（字符串键值对象）；`remote` 为 http(s) `url` + 可选 `headers`。`command`/`url`/`env` 值原样透传、不做 `${VAR}` 展开（MCP server 自身的环境变量用显式 `env` 字段表达）。
+
+三引擎映射（skills/mcp 的目标位置都随既有隔离注入变量走，`<state>` 即状态目录）：
+
+| 引擎 | skills 目标 | mcp 目标 | 机制 |
+| --- | --- | --- | --- |
+| opencode | `<state>/opencode/xdg/opencode/skills/<name>/` | 并入生成的 `<state>/opencode/opencode.json`：local → `mcp.<name> = { "type": "local", "command": [...], "environment": {...} }`，remote → `{ "type": "remote", "url": ..., "headers": {...} }`（官方 config schema，与 provider 段同文件、无新增注入变量） | skills 经注入的 `XDG_CONFIG_HOME=<state>/opencode/xdg` 发现——**只重定向配置目录**，auth/数据/缓存（`XDG_DATA_HOME` 等）不动，与 `OPENCODE_CONFIG` 叠加生效 |
+| omp | `<state>/omp/agent/skills/<name>/` | 经 **ACP 协议传递**：网关（ACP 客户端）在 `session/new.mcpServers`（及 session/load、session/resume）下发 v1 形态——stdio `{name, command, args, env}`、http `{name, type:"http", url, headers}`；`<state>/omp/agent/mcp.json` 仍会生成（标准 `mcpServers` 结构，对 TUI 模式 omp 有效，ACP 模式不读取、无害） | **网关自动处理，无需用户动作**；注意 omp 18.1.2 有 250ms MCP 启动竞速窗口——慢握手 server（如 npx 冷启的 stdio）不挂载，升级 omp ≥18.1.3 解决 |
+| pi | `<state>/pi/agent/skills/<name>/` | `<state>/pi/agent/mcp.json`（同 OMP 的 `mcpServers` 结构）+ `<state>/pi/agent/settings.json` 的 `extensions` 数组写入本地 adapter 入口 | skills 与 mcp.json 随 `PI_CODING_AGENT_DIR` 被 PI 发现；MCP 经 **pi-mcp-adapter** 装配——adapter 已随仓库 `npm install` 本地化（optionalDependencies），settings.json 为**合并语义**（既有主题/extensions 保留，只追加 adapter 入口，不整体覆盖）；pi 引擎另自动注入 TLS 兼容 shim（api.z.ai CDN 丢弃 Node 24 默认 MLKEM768 ClientHello 的握手，shim 限定经典曲线组恢复连接，平台修复后冗余但无害） |
+
+实测结论（2026-09-03 三引擎真实 key 验证；结果总表与调试叙事见 `docs/superpowers/plans/2026-09-03-unified-skills-mcp-run-notes.md`，设计侧记录见设计文档「实施后记」）：
+
+- **OMP**：MCP 经 ACP 协议传递，网关自动处理、无需用户动作；remote 形态实测可用（context7 两工具上线，无需降级"警告并忽略"分支）。
+- **PI**：pi-mcp-adapter 已默认随仓库 `npm install` 安装（optionalDependencies，未装时网关警告并忽略 mcp 段，引擎正常启动）；实测 2.32.1 与 pi-acp 0.5.0 内嵌 pi 0.84.2 兼容——memory + context7 remote 全部连接成功，无需 pin 旧版。
+
+错误处理：skill 路径不存在 / 目录缺 `SKILL.md` / 名字非法或重复、mcp 形态错误（`type`/`command`/`url`/`env`）——启动即报错退出，不生成任何文件；PI 配置了 mcp 但本地 adapter 未安装（未 `npm install`）时，网关 stderr 警告并忽略 mcp 段，引擎正常启动；skills/mcp 均未配置时行为与之前完全一致。
 
 ## 引擎侧直配（可选）
 
