@@ -13,7 +13,7 @@
 - `prompt_async` 阻塞至本轮完成；消息含 `tool_calls` / `info.finish` / `step-finish`，满足裁判完成判定
 - 引擎切换：`--engine opencode|omp|pi` 或环境变量 `AGENT_ENGINE`
 - **网关统一配置** `gateway.config.json`：模型 provider 一处声明，启动时自动生成三引擎隔离配置（发现顺序与注入细节见 solution/config-templates/README.md）
-- **能力统一供给**：`skills` / `mcp` 两段一处声明——技能整目录复制到所选引擎的隔离 skills 目录，MCP server 按各引擎原生形态写入（OpenCode 并入生成文件 / OMP `mcp.json` / PI 经 pi-mcp-adapter 装配），映射与验证状态见 solution/config-templates/README.md「能力供给」
+- **能力统一供给**：`skills` / `mcp` 两段一处声明——技能整目录复制到所选引擎的隔离 skills 目录，MCP server 按各引擎原生机制供给（OpenCode 并入生成文件 / OMP 经 ACP 协议下发 / PI 经 pi-mcp-adapter 装配），映射与验证状态见 solution/config-templates/README.md「能力供给」
 
 ## 快速开始
 
@@ -53,7 +53,7 @@ docs/superpowers/          设计文档、实施计划、实测记录（run-note
 
 ## 实测状态
 
-OpenCode 1.18.26 / OMP 18.1.2 / PI(pi-acp 0.5.0) 三引擎经网关接入 GLM5.2 后 rehearsal 均 10/10（macOS）：2026-09-02 引擎侧直配路径，2026-09-03 网关统一配置路径（含 opencode/omp 干净 HOME 复验，见 `docs/superpowers/plans/2026-09-02-unified-gateway-config-run-notes.md`）。详见 `docs/superpowers/plans/2026-09-01-multi-engine-gateway-run-notes.md`。待办：Windows 实机复验、评测全量用例。
+OpenCode 1.18.26 / OMP 18.1.2 / PI(pi-acp 0.5.0) 三引擎经网关接入 GLM5.2 后 rehearsal 均 10/10（macOS）：2026-09-02 引擎侧直配路径，2026-09-03 网关统一配置路径（含 opencode/omp 干净 HOME 复验，见 `docs/superpowers/plans/2026-09-02-unified-gateway-config-run-notes.md`）。详见 `docs/superpowers/plans/2026-09-01-multi-engine-gateway-run-notes.md`。2026-09-03 能力供给三引擎实测（skills 全绿；MCP OpenCode/PI 全绿、OMP remote 绿 + 慢启动 server 需 omp≥18.1.3），详见 `docs/superpowers/plans/2026-09-03-unified-skills-mcp-run-notes.md`。待办：Windows 实机复验、评测全量用例。
 
 ## 来源与许可
 

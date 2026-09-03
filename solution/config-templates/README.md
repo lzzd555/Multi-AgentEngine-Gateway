@@ -21,7 +21,7 @@
   },
   "skills": ["./skills/demo-skill"],
   "mcp": {
-    "fetch": { "type": "local", "command": ["npx", "-y", "mcp-server-fetch"] }
+    "memory": { "type": "local", "command": ["npx", "-y", "@modelcontextprotocol/server-memory"] }
   },
   "engines": { "opencode": {}, "omp": {}, "pi": {} }
 }
@@ -64,13 +64,13 @@
 | 引擎 | skills 目标 | mcp 目标 | 机制 |
 | --- | --- | --- | --- |
 | opencode | `<state>/opencode/xdg/opencode/skills/<name>/` | 并入生成的 `<state>/opencode/opencode.json`：local → `mcp.<name> = { "type": "local", "command": [...], "environment": {...} }`，remote → `{ "type": "remote", "url": ..., "headers": {...} }`（官方 config schema，与 provider 段同文件、无新增注入变量） | skills 经注入的 `XDG_CONFIG_HOME=<state>/opencode/xdg` 发现——**只重定向配置目录**，auth/数据/缓存（`XDG_DATA_HOME` 等）不动，与 `OPENCODE_CONFIG` 叠加生效 |
-| omp | `<state>/omp/agent/skills/<name>/` | `<state>/omp/agent/mcp.json`（标准 `mcpServers` 结构）：local → `{ "command": command[0], "args": [...], "env": {...} }`，remote → `{ "type": "http", "url": ..., "headers": {...} }` | 随 `PI_CONFIG_DIR` 被 OMP 原生发现 |
-| pi | `<state>/pi/agent/skills/<name>/` | `<state>/pi/agent/mcp.json`（同 OMP 的 `mcpServers` 结构）+ `<state>/pi/agent/settings.json` 的 `extensions` 数组写入本地 adapter 入口 | skills 与 mcp.json 随 `PI_CODING_AGENT_DIR` 被 PI 发现；MCP 经 **pi-mcp-adapter** 装配——adapter 已随仓库 `npm install` 本地化（optionalDependencies），settings.json 为**合并语义**（既有主题/extensions 保留，只追加 adapter 入口，不整体覆盖） |
+| omp | `<state>/omp/agent/skills/<name>/` | 经 **ACP 协议传递**：网关（ACP 客户端）在 `session/new.mcpServers`（及 session/load、session/resume）下发 v1 形态——stdio `{name, command, args, env}`、http `{name, type:"http", url, headers}`；`<state>/omp/agent/mcp.json` 仍会生成（标准 `mcpServers` 结构，对 TUI 模式 omp 有效，ACP 模式不读取、无害） | **网关自动处理，无需用户动作**；注意 omp 18.1.2 有 250ms MCP 启动竞速窗口——慢握手 server（如 npx 冷启的 stdio）不挂载，升级 omp ≥18.1.3 解决 |
+| pi | `<state>/pi/agent/skills/<name>/` | `<state>/pi/agent/mcp.json`（同 OMP 的 `mcpServers` 结构）+ `<state>/pi/agent/settings.json` 的 `extensions` 数组写入本地 adapter 入口 | skills 与 mcp.json 随 `PI_CODING_AGENT_DIR` 被 PI 发现；MCP 经 **pi-mcp-adapter** 装配——adapter 已随仓库 `npm install` 本地化（optionalDependencies），settings.json 为**合并语义**（既有主题/extensions 保留，只追加 adapter 入口，不整体覆盖）；pi 引擎另自动注入 TLS 兼容 shim（api.z.ai CDN 丢弃 Node 24 默认 MLKEM768 ClientHello 的握手，shim 限定经典曲线组恢复连接，平台修复后冗余但无害） |
 
-两个验证项状态（如实标注；实测结果见 `docs/superpowers/plans/2026-09-03-unified-skills-mcp-run-notes.md`）：
+实测结论（2026-09-03 三引擎真实 key 验证；结果总表与调试叙事见 `docs/superpowers/plans/2026-09-03-unified-skills-mcp-run-notes.md`，设计侧记录见设计文档「实施后记」）：
 
-- **OMP remote 形态**：生成的 `{"type":"http",...}` 是否被 OMP 18.1.2 实际接受——以实测为准；若不支持，OMP+remote 将降级为"启动警告并忽略"并回填本节（local 形态不受影响）。
-- **PI adapter 兼容性**：pi-mcp-adapter 2.32.1 面向最新 pi API，与 pi-acp 0.5.0 内嵌 pi 0.84.2 的扩展 API 兼容性——以实测为准；不兼容则 pin 到与 0.84.2 同期的 adapter 版本并回填。
+- **OMP**：MCP 经 ACP 协议传递，网关自动处理、无需用户动作；remote 形态实测可用（context7 两工具上线，无需降级"警告并忽略"分支）。
+- **PI**：pi-mcp-adapter 已默认随仓库 `npm install` 安装（optionalDependencies，未装时网关警告并忽略 mcp 段，引擎正常启动）；实测 2.32.1 与 pi-acp 0.5.0 内嵌 pi 0.84.2 兼容——memory + context7 remote 全部连接成功，无需 pin 旧版。
 
 错误处理：skill 路径不存在 / 目录缺 `SKILL.md` / 名字非法或重复、mcp 形态错误（`type`/`command`/`url`/`env`）——启动即报错退出，不生成任何文件；PI 配置了 mcp 但本地 adapter 未安装（未 `npm install`）时，网关 stderr 警告并忽略 mcp 段，引擎正常启动；skills/mcp 均未配置时行为与之前完全一致。
 

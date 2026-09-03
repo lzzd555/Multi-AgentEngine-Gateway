@@ -69,15 +69,15 @@ PI 是轻引擎，按用户决策**直接装进项目**，消除 npx 首跑网�
 - `package.json` 增加 `optionalDependencies`：`@automatalabs/pi-acp@0.5.0`（依赖树 268MB/139 包，node_modules 不入库，lockfile 锁定版本）与 `pi-mcp-adapter@2.32.1`（约 2.9MB）。用 `optionalDependencies` 而非 `dependencies`：离线/安装失败不阻断 `npm install`，网关按下面的优先级回落
 - **PI 启动命令优先级**：配置 `engines.pi.command` > 项目本地 `<repoRoot>/node_modules/.bin/pi-acp` > PATH 上的 `pi-acp` > npx 拉起（现状兜底）。本地探测在网关侧 `resolveEngineCommand` 的默认解析链中实现（repoRoot 从 gateway-config.js 向上定位 package.json）；未改动 bridge 的 `resolveAcpLaunch`
 - **代价（如实记录）**：交付流程从"无需 npm install"变为"建议 `npm install`（未装时 PI 回落 npx，OpenCode/OMP 不受影响）"。README/INSTRUCTION 同步更新。网关核心零依赖约束不受影响（import 边界测试只约束 gateway/ 核心文件，依赖声明在仓库根 package.json）
-- **实施验证项**：pi-mcp-adapter 2.32.1 面向最新 pi API，与 pi-acp 0.5.0 内嵌的 pi 0.84.2 的扩展 API 兼容性需实测；不兼容则降级 pin 到与 0.84.2 同期的 adapter 版本
+- **已验证（2026-09-03 实测，见 §5 PI 行与 §10 实施后记）**：pi-mcp-adapter 2.32.1 与 pi-acp 0.5.0 内嵌 pi 0.84.2 兼容，无需 pin 旧版
 
 ## 5. MCP 供给
 
 | 引擎 | 机制 |
 |---|---|
 | OpenCode | 并入生成的 `opencode.json`：local → `mcp.<name> = { type: "local", command, environment: env }`；remote → `{ type: "remote", url, headers }`。与 provider 段同文件，无新增注入变量 |
-| OMP | 生成 `<stateDir>/omp/agent/mcp.json`（标准 `mcpServers` 结构）：local → `{ "command": command[0], "args": command.slice(1), "env": env }`；remote → `{ "type": "http", "url": url, "headers": headers }`。**实施验证项**：remote 的 http 形态以 OMP 18.1.2 实测为准；若实测不支持，OMP+remote 降级为"启动警告并忽略"并回填本节（local 不受影响） |
-| PI | 生成 `<stateDir>/pi/agent/mcp.json`（同 OMP 的 mcpServers 结构，adapter 经 `PI_CODING_AGENT_DIR` 读取）；并在 `<stateDir>/pi/agent/settings.json` 的 `extensions` 数组写入本地 adapter 入口路径（`<repoRoot>/node_modules/pi-mcp-adapter` 的入口文件，**合并语义**：settings.json 已存在则读取-合并 extensions，绝不整体覆盖）。**前提**：本地 adapter 已安装（§4）；未安装时 stderr 警告"运行 npm install 启用 PI 的 MCP"并忽略 mcp 段，引擎正常启动 |
+| OMP | 网关作为 ACP 客户端经 `session/new.mcpServers`（及 `session/load`、`session/resume`）传递（@agentclientprotocol/sdk v1 形态：stdio `{name, command, args, env: Array<{name,value}>}`、http `{name, type:"http", url, headers: Array<{name,value}>}`）。依据：omp ACP 模式 `enableMCP:false` 禁用磁盘 mcp.json 发现（上游 main.ts 注释与 issue #1234）。`<stateDir>/omp/agent/mcp.json` 文件仍会生成——对 TUI 模式 omp 有效且无害（实测纠正见 §10 实施后记 a） |
+| PI | 生成 `<stateDir>/pi/agent/mcp.json`（标准 `mcpServers` 结构，adapter 经 `PI_CODING_AGENT_DIR` 读取）；并在 `<stateDir>/pi/agent/settings.json` 的 `extensions` 数组写入本地 adapter 入口路径（**合并语义**：settings.json 已存在则读取-合并 extensions，绝不整体覆盖）。**前提**：本地 adapter 已安装（§4）；未安装时 stderr 警告"运行 npm install 启用 PI 的 MCP"并忽略 mcp 段，引擎正常启动。**已验证（2026-09-03 实测）**：pi-mcp-adapter@2.32.1 与内嵌 pi 0.84.2 兼容——memory 9 工具 + context7 remote 2 工具全部连接成功；settings.json extensions 指向 `node_modules/pi-mcp-adapter/index.ts`（包无 main/dist，TS 入口为 pi extension 惯例） |
 
 统一 schema 的 `command` 为完整数组（OpenCode 原生形态）；OMP/PI 生成时拆分为 `command[0]` + `args`。`command`/`url`/`env` 值中的 `${VAR}` 等**不做展开**，原样透传（MCP server 的环境变量用显式 `env` 字段表达）。
 
@@ -88,7 +88,7 @@ PI 是轻引擎，按用户决策**直接装进项目**，消除 npx 首跑网�
 | skill 路径不存在 / 目录无 SKILL.md / 名字非法或重复 | 启动报错退出，不生成任何文件 |
 | mcp 校验失败（type/command/url/env 形态） | 同上 |
 | 目标 skills/mcp 目录不可写 | 启动报错退出 |
-| OMP+remote MCP 实测不支持 | 警告并忽略该 server（§5 实施验证项的降级分支） |
+| OMP+remote MCP 实测不支持 | （预留降级分支，实测未触发：OMP 18.1.2 经 ACP `mcpServers` 接受 http 形态，context7 两工具上线） |
 | PI + mcp 段且本地 adapter 未安装 | 警告"npm install 后可用"并忽略 mcp 段，引擎正常启动 |
 | skills/mcp 未配置 | 零行为变化（回归保障） |
 
@@ -117,3 +117,12 @@ PI 是轻引擎，按用户决策**直接装进项目**，消除 npx 首跑网�
 - skill frontmatter 解析/改写/跨引擎规范化
 - MCP server 的健康检查、生命周期管理、工具白名单（引擎/adapter 自行拉起与管理）
 - skill 的热更新（重启网关生效）
+
+## 10. 实施后记（2026-09-03 三引擎实测回填）
+
+真实 key 三引擎实测（结果表与调试叙事见 `docs/superpowers/plans/2026-09-03-unified-skills-mcp-run-notes.md` §3）对原设计的纠正与发现：
+
+- **a) OMP ACP 模式 MCP 通道纠正**：原设计为写 `<stateDir>/omp/agent/mcp.json` 交由 OMP 原生发现；实测发现 omp 的 ACP 模式以 `enableMCP:false` 禁用磁盘 mcp.json 发现（上游 main.ts 注释与 issue #1234），该文件在 ACP 模式下不被读取。纠正为网关作为 ACP 客户端经 `session/new.mcpServers`（及 session/load、session/resume）传递（@agentclientprotocol/sdk v1 形态，见 §5 表）。mcp.json 文件仍会生成——对 TUI 模式 omp 有效且无害。
+- **b) TLS 兼容问题（平台侧）**：2026-09-03 起 api.z.ai 平台升级（glm-5.3 上线）后，其 CDN 丢弃携带 MLKEM768 大 ClientHello 的 TLS 握手（Node 24/OpenSSL 3.5 默认发送；curl/Bun 不受影响——故 OMP/OpenCode 无恙而纯 Node 子进程的 PI 全挂，每轮模型调用 "Request timed out"）。网关处置：`bridge/src/tls-compat-shim.cjs` 经 `NODE_OPTIONS --require` 注入 pi 子进程（`ecdhCurve` 限定 `X25519:P-256:P-384`，在既有 NODE_OPTIONS 基础上追加、不覆盖；仅统一配置路径生效）。平台修复后 shim 冗余但无害。
+- **c) omp 18.1.2 的 MCP 250ms 启动竞速窗口**：该版本会丢弃握手慢于 250ms 的 MCP server（上游已修，18.1.3+）。实测 remote（context7）正常挂载；慢启动 stdio（npx 冷启的 memory）在 18.1.2 上不挂载——升级 omp 即可（本机升级因 GitHub CDN 超时未完成，属环境问题而非网关问题）。
+- **d) 示例包名纠正**：`mcp-server-fetch` 在 npm 上为 0.0.1-security 占位包（官方 fetch server 已从 npm 下架、仅存 Python 形态）；示例改为官方维护的 `@modelcontextprotocol/server-memory`（`gateway.config.example.json` 与 `solution/config-templates/README.md` 已同步）。
