@@ -157,6 +157,35 @@ test("config carries validated skills and mcp sections", () => {
   })
 })
 
+// 标准形态 + 环境变量引用展开端到端：loadGatewayConfig 的 environment 参数贯穿到 mcp 展开。
+test("loadGatewayConfig expands mcp env references and warns about unset variables", () => {
+  withTempConfig({
+    engines: {},
+    mcp: {
+      mcpServers: {
+        "welink-msg": {
+          command: "uvx",
+          args: ["--from", "https://x/y.tar.gz", "welink-msg", "stdio"],
+          env: { WELINK_TOKEN: "{{WELINK_TOKEN}}" }
+        }
+      }
+    }
+  }, (file) => {
+    const loaded = loadGatewayConfig({ configPath: file, environment: { WELINK_TOKEN: "demo-token" } })
+    assert.deepEqual(loaded.mcp["welink-msg"], {
+      type: "local",
+      command: ["uvx", "--from", "https://x/y.tar.gz", "welink-msg", "stdio"],
+      env: { WELINK_TOKEN: "demo-token" }
+    })
+    assert.deepEqual(loaded.warnings, [])
+    const unset = loadGatewayConfig({ configPath: file, environment: {} })
+    assert.equal(unset.mcp["welink-msg"].env.WELINK_TOKEN, "{{WELINK_TOKEN}}")
+    assert.deepEqual(unset.warnings, [
+      "mcp.welink-msg.env.WELINK_TOKEN references unset environment variable WELINK_TOKEN; the literal reference was kept"
+    ])
+  })
+})
+
 const MODEL = {
   providers: {
     zaicoding: {

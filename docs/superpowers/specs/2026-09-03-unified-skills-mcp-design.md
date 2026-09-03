@@ -79,7 +79,9 @@ PI 是轻引擎，按用户决策**直接装进项目**，消除 npx 首跑网�
 | OMP | 网关作为 ACP 客户端经 `session/new.mcpServers`（及 `session/load`、`session/resume`）传递（@agentclientprotocol/sdk v1 形态：stdio `{name, command, args, env: Array<{name,value}>}`、http `{name, type:"http", url, headers: Array<{name,value}>}`）。依据：omp ACP 模式 `enableMCP:false` 禁用磁盘 mcp.json 发现（上游 main.ts 注释与 issue #1234）。`<stateDir>/omp/agent/mcp.json` 文件仍会生成——对 TUI 模式 omp 有效且无害（实测纠正见 §10 实施后记 a） |
 | PI | 生成 `<stateDir>/pi/agent/mcp.json`（标准 `mcpServers` 结构，adapter 经 `PI_CODING_AGENT_DIR` 读取）；并在 `<stateDir>/pi/agent/settings.json` 的 `extensions` 数组写入本地 adapter 入口路径（**合并语义**：settings.json 已存在则读取-合并 extensions，绝不整体覆盖）。**前提**：本地 adapter 已安装（§4）；未安装时 stderr 警告"运行 npm install 启用 PI 的 MCP"并忽略 mcp 段，引擎正常启动。**已验证（2026-09-03 实测）**：pi-mcp-adapter@2.32.1 与内嵌 pi 0.84.2 兼容——memory 10 工具 + context7 remote 2 工具全部连接成功；settings.json extensions 指向 `node_modules/pi-mcp-adapter/index.ts`（包无 main/dist，TS 入口为 pi extension 惯例） |
 
-统一 schema 的 `command` 为完整数组（OpenCode 原生形态）；OMP/PI 生成时拆分为 `command[0]` + `args`。`command`/`url`/`env` 值中的 `${VAR}` 等**不做展开**，原样透传（MCP server 的环境变量用显式 `env` 字段表达）。
+统一 schema 的 `command` 为完整数组（OpenCode 原生形态）；OMP/PI 生成时拆分为 `command[0]` + `args`。
+
+**格式兼容与 env 引用展开（2026-09-03 补充，实测驱动，纠正上版"不做展开"的表述）**：`mcp` 段直接接受标准 Claude Desktop / mcpServers 形态——顶层 `{"mcpServers": {...}}` 外壳自动剥离（与直接 server 条目混用报错；外壳值非对象落入既有名字校验报错）；`type` 可省略（有 `command` 推断 local、有 `url` 推断 remote，显式 `type` 优先）；`command` 可为非空字符串 + 可选 `args` 数组（标准形态，归一为单一命令数组；数组形态不允许再带独立 `args`）。`env`/`headers` 的**值**在配置加载时展开 `{{VAR}}` / `${VAR}` / `$VAR` 三种引用（取值来自网关进程环境，裸 `$VAR` 遵循 shell 名字边界语义），供给三引擎的文件/会话数据拿到的是已展开值；引用未设置时**保留字面引用并启动警告**（`mcp.<server>.<env|headers>.<key> references unset environment variable <NAME>; the literal reference was kept`），引擎/子进程报错仍可定位。`command`/`url` 本身不展开（与上版一致）。
 
 ## 6. 错误处理
 
