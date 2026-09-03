@@ -315,3 +315,119 @@ test("directory-scoped sessions: listSessionStatuses merges scoped statuses over
   assert.deepEqual(statuses, { plainSes: { type: "idle" }, ses_x1: { type: "busy" } })
   await engine.dispose()
 })
+
+test("directory-scoped sessions: listQuestions merges scoped entries over the unscoped list", async () => {
+  // 实测：目录作用域会话的反问只出现在 /question?directory=<dir> 上，无作用域列表恒为空；
+  // 评测按通用规范 §8.2 轮询无作用域 GET /question，不聚合则永远看不到反问。
+  const fetchImpl = async (url, init = {}) => {
+    const u = String(url)
+    if (u.includes("/event")) return new Response("{}", { status: 200 })
+    if (u.endsWith("/session?directory=%2Ftmp%2FdirQ") && init.method === "POST") {
+      return new Response(JSON.stringify({ id: "ses_q1" }), { status: 200 })
+    }
+    if (u.endsWith("/question?directory=%2Ftmp%2FdirQ")) {
+      return new Response(JSON.stringify([{ id: "q_scoped", question: "scoped?" }]), { status: 200 })
+    }
+    if (u.endsWith("/question")) {
+      return new Response(JSON.stringify([{ id: "q_plain", question: "plain?" }]), { status: 200 })
+    }
+    return new Response("{}", { status: 200 })
+  }
+  const engine = createOpenCodeEngine({ manageHost: false, fetchImpl })
+  await engine.initialize()
+  try {
+    await engine.createSession({ title: "q", directory: "/tmp/dirQ" })
+    const questions = await engine.listQuestions()
+    // 无作用域条目在前，作用域独有条目追加，两边都可见
+    assert.deepEqual(questions, [
+      { id: "q_plain", question: "plain?" },
+      { id: "q_scoped", question: "scoped?" }
+    ])
+  } finally {
+    // dispose 必须始终执行：断言失败时 SSE 泵的轮询定时器会挂住测试进程
+    await engine.dispose()
+  }
+})
+
+test("directory-scoped sessions: listPermissions merges scoped entries over the unscoped list", async () => {
+  // 与 /question 同类：目录作用域会话的授权请求只出现在作用域列表上（同类实测推断）。
+  const fetchImpl = async (url, init = {}) => {
+    const u = String(url)
+    if (u.includes("/event")) return new Response("{}", { status: 200 })
+    if (u.endsWith("/session?directory=%2Ftmp%2FdirP") && init.method === "POST") {
+      return new Response(JSON.stringify({ id: "ses_p1" }), { status: 200 })
+    }
+    if (u.endsWith("/permission?directory=%2Ftmp%2FdirP")) {
+      return new Response(JSON.stringify([{ id: "p_scoped", pattern: "bash*" }]), { status: 200 })
+    }
+    if (u.endsWith("/permission")) {
+      return new Response(JSON.stringify([{ id: "p_plain", pattern: "edit*" }]), { status: 200 })
+    }
+    return new Response("{}", { status: 200 })
+  }
+  const engine = createOpenCodeEngine({ manageHost: false, fetchImpl })
+  await engine.initialize()
+  try {
+    await engine.createSession({ title: "p", directory: "/tmp/dirP" })
+    const permissions = await engine.listPermissions()
+    assert.deepEqual(permissions, [
+      { id: "p_plain", pattern: "edit*" },
+      { id: "p_scoped", pattern: "bash*" }
+    ])
+  } finally {
+    await engine.dispose()
+  }
+})
+
+test("directory-scoped sessions: list merges dedupe by id with the scoped entry winning", async () => {
+  const fetchImpl = async (url, init = {}) => {
+    const u = String(url)
+    if (u.includes("/event")) return new Response("{}", { status: 200 })
+    if (u.endsWith("/session?directory=%2Ftmp%2FdirDup") && init.method === "POST") {
+      return new Response(JSON.stringify({ id: "ses_dup1" }), { status: 200 })
+    }
+    if (u.endsWith("/question?directory=%2Ftmp%2FdirDup")) {
+      return new Response(JSON.stringify([{ id: "q_dup", answers: ["scoped"] }]), { status: 200 })
+    }
+    if (u.endsWith("/question")) {
+      return new Response(JSON.stringify([{ id: "q_dup", answers: ["stale"] }]), { status: 200 })
+    }
+    return new Response("{}", { status: 200 })
+  }
+  const engine = createOpenCodeEngine({ manageHost: false, fetchImpl })
+  await engine.initialize()
+  try {
+    await engine.createSession({ title: "dup", directory: "/tmp/dirDup" })
+    const questions = await engine.listQuestions()
+    // 同 id 只保留一条，且作用域值（权威视图）覆盖无作用域旧值
+    assert.deepEqual(questions, [{ id: "q_dup", answers: ["scoped"] }])
+  } finally {
+    await engine.dispose()
+  }
+})
+
+test("directory-scoped sessions: a failed scoped list fetch degrades to the unscoped list", async () => {
+  const requests = []
+  const fetchImpl = async (url, init = {}) => {
+    const u = String(url)
+    requests.push(u)
+    if (u.includes("/event")) return new Response("{}", { status: 200 })
+    if (u.endsWith("/session?directory=%2Ftmp%2FdirF") && init.method === "POST") {
+      return new Response(JSON.stringify({ id: "ses_f1" }), { status: 200 })
+    }
+    if (u.includes("/question?directory=")) throw new Error("scoped fetch failed")
+    if (u.endsWith("/question")) return new Response(JSON.stringify([{ id: "q_plain" }]), { status: 200 })
+    return new Response("{}", { status: 200 })
+  }
+  const engine = createOpenCodeEngine({ manageHost: false, fetchImpl })
+  await engine.initialize()
+  try {
+    await engine.createSession({ title: "f", directory: "/tmp/dirF" })
+    const questions = await engine.listQuestions()
+    // 作用域拉取失败时降级：不抛错，无作用域条目仍然返回
+    assert.deepEqual(questions, [{ id: "q_plain" }])
+    assert.ok(requests.some((u) => u.includes("/question?directory=")), "scoped list fetch was attempted")
+  } finally {
+    await engine.dispose()
+  }
+})

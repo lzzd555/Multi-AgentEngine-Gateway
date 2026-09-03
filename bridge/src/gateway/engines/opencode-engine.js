@@ -90,6 +90,24 @@ export function createOpenCodeEngine({
     }
   }
 
+  // 通用规范 1.2：目录作用域会话的反问/授权只出现在 ?directory= 作用域列表上（实测确认），
+  // 无作用域列表恒为空；评测按规范 §8.2 轮询无作用域列表，不聚合则永远看不到反问。
+  // 逐目录补拉作用域视图后按 id 合并：无作用域条目在前、作用域独有条目追加，同 id 时作用域值优先
+  //（与 listSessionStatuses 的合并策略同源，只是形状为数组）。作用域拉取失败按 listJSONOrEmpty 降级为 []。
+  // （listSessionStatuses 保持独立实现：其合并形状是对象按会话 id Object.assign，且不降级。）
+  async function listScopedOrEmpty(path) {
+    const merged = [...(await listJSONOrEmpty(path))]
+    for (const directory of new Set(sessionDirectories.values())) {
+      const scoped = await listJSONOrEmpty(`${path}?directory=${encodeURIComponent(directory)}`)
+      for (const entry of scoped) {
+        const existing = typeof entry?.id === "string" ? merged.findIndex((item) => item?.id === entry.id) : -1
+        if (existing === -1) merged.push(entry)
+        else merged[existing] = entry
+      }
+    }
+    return merged
+  }
+
   async function waitUntilIdle(sessionID) {
     const deadline = Date.now() + promptTimeoutMs
     // A freshly submitted turn is not marked busy instantly; polling before that moment must not
@@ -258,7 +276,7 @@ export function createOpenCodeEngine({
     },
 
     async listQuestions() {
-      return listJSONOrEmpty("/question")
+      return listScopedOrEmpty("/question")
     },
 
     async replyQuestion(requestID, answers) {
@@ -269,7 +287,7 @@ export function createOpenCodeEngine({
     },
 
     async listPermissions() {
-      return listJSONOrEmpty("/permission")
+      return listScopedOrEmpty("/permission")
     },
 
     async replyPermission(requestID, { reply, message } = {}) {
