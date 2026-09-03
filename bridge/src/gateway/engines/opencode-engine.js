@@ -48,6 +48,9 @@ export function createOpenCodeEngine({
   // directoryStreams 为每个目录维护一条 SSE 订阅（目录会话的事件只出现在对应目录流上）。
   const sessionDirectories = new Map()
   const directoryStreams = new Map()
+  // 反问/授权请求 id → 来源目录。应答必须打到来源实例：无作用域 reply 会落到错误实例，
+  // 挂起的回合永不恢复（实测 200 但不解除挂起，带目录 18.3s 正常完成）。
+  const requestDirectories = new Map()
 
   function emit(event) {
     for (const listener of [...listeners]) {
@@ -100,6 +103,9 @@ export function createOpenCodeEngine({
     for (const directory of new Set(sessionDirectories.values())) {
       const scoped = await listJSONOrEmpty(`${path}?directory=${encodeURIComponent(directory)}`)
       for (const entry of scoped) {
+        // 记录作用域条目的来源目录（供 replyQuestion/replyPermission 续带）；无作用域条目
+        // 不携带目录信息，跳过——不得用 undefined 覆盖已记录的映射。
+        if (typeof entry?.id === "string") requestDirectories.set(entry.id, directory)
         const existing = typeof entry?.id === "string" ? merged.findIndex((item) => item?.id === entry.id) : -1
         if (existing === -1) merged.push(entry)
         else merged[existing] = entry
@@ -175,6 +181,12 @@ export function createOpenCodeEngine({
     const directory = sessionDirectories.get(sessionID)
     const base = `/session/${encodeURIComponent(sessionID)}${suffix}`
     return directory ? `${base}?directory=${encodeURIComponent(directory)}` : base
+  }
+
+  // 与 scopedPath 同构但按反问/授权请求 id 取来源目录；未记录来源的 id 保持无 query 的旧路径。
+  function requestScopeQuery(requestID) {
+    const directory = requestDirectories.get(requestID)
+    return directory ? `?directory=${encodeURIComponent(directory)}` : ""
   }
 
   // 通用规范 1.2：目录作用域会话的 busy 态只出现在 /session/status?directory= 上（实测确认），
@@ -280,7 +292,7 @@ export function createOpenCodeEngine({
     },
 
     async replyQuestion(requestID, answers) {
-      await request(`/question/${encodeURIComponent(requestID)}/reply`, {
+      await request(`/question/${encodeURIComponent(requestID)}/reply${requestScopeQuery(requestID)}`, {
         method: "POST",
         body: JSON.stringify({ answers })
       })
@@ -291,7 +303,7 @@ export function createOpenCodeEngine({
     },
 
     async replyPermission(requestID, { reply, message } = {}) {
-      await request(`/permission/${encodeURIComponent(requestID)}/reply`, {
+      await request(`/permission/${encodeURIComponent(requestID)}/reply${requestScopeQuery(requestID)}`, {
         method: "POST",
         body: JSON.stringify({ reply, ...(message !== undefined ? { message } : {}) })
       })

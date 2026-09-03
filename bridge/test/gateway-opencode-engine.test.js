@@ -406,6 +406,158 @@ test("directory-scoped sessions: list merges dedupe by id with the scoped entry 
   }
 })
 
+test("directory-scoped sessions: replyQuestion injects the origin directory for scoped questions", async () => {
+  // 实测：目录作用域会话挂起时，无作用域 POST /question/{id}/reply 返回 200 但打到错误实例，
+  // 挂起的回合永不恢复；带 ?directory=<来源目录> 的同一应答 18.3s 正常完成。
+  // 因此作用域列表里出现过的反问，其应答必须续带来源目录；无作用域来源的 id 保持旧路径不变。
+  const requests = []
+  const fetchImpl = async (url, init = {}) => {
+    const u = String(url)
+    requests.push({ url: u, method: init.method ?? "GET" })
+    if (u.includes("/event")) return new Response("{}", { status: 200 })
+    if (u.endsWith("/session?directory=%2Ftmp%2FdirRQ") && init.method === "POST") {
+      return new Response(JSON.stringify({ id: "ses_rq1" }), { status: 200 })
+    }
+    if (u.endsWith("/question?directory=%2Ftmp%2FdirRQ")) {
+      return new Response(JSON.stringify([{ id: "q_scoped", question: "scoped?" }]), { status: 200 })
+    }
+    if (u.endsWith("/question")) {
+      return new Response(JSON.stringify([{ id: "q_plain", question: "plain?" }]), { status: 200 })
+    }
+    return new Response("{}", { status: 200 })
+  }
+  const engine = createOpenCodeEngine({ manageHost: false, fetchImpl })
+  await engine.initialize()
+  try {
+    await engine.createSession({ title: "rq", directory: "/tmp/dirRQ" })
+    await engine.listQuestions() // 聚合时记录每个反问的来源目录
+    requests.length = 0
+    await engine.replyQuestion("q_scoped", [["A"]])
+    assert.ok(
+      requests.some((r) => r.method === "POST" && r.url.endsWith("/question/q_scoped/reply?directory=%2Ftmp%2FdirRQ")),
+      "reply for a scoped-origin question carries the directory query"
+    )
+    await engine.replyQuestion("q_plain", [["B"]])
+    const plainReply = requests.find((r) => r.method === "POST" && r.url.includes("/question/q_plain/reply"))
+    assert.ok(plainReply, "reply for an unscoped-origin question was issued")
+    assert.ok(!plainReply.url.includes("?"), "unscoped-origin reply keeps the byte-identical old path")
+  } finally {
+    // dispose 必须始终执行：断言失败时 SSE 泵的轮询定时器会挂住测试进程
+    await engine.dispose()
+  }
+})
+
+test("directory-scoped sessions: replyPermission injects the origin directory for scoped permissions", async () => {
+  // 与 /question 同类：授权应答同样需要按来源目录续带（同类实测推断，见上方反问实测）。
+  const requests = []
+  const fetchImpl = async (url, init = {}) => {
+    const u = String(url)
+    requests.push({ url: u, method: init.method ?? "GET" })
+    if (u.includes("/event")) return new Response("{}", { status: 200 })
+    if (u.endsWith("/session?directory=%2Ftmp%2FdirRP") && init.method === "POST") {
+      return new Response(JSON.stringify({ id: "ses_rp1" }), { status: 200 })
+    }
+    if (u.endsWith("/permission?directory=%2Ftmp%2FdirRP")) {
+      return new Response(JSON.stringify([{ id: "p_scoped", pattern: "bash*" }]), { status: 200 })
+    }
+    if (u.endsWith("/permission")) {
+      return new Response(JSON.stringify([{ id: "p_plain", pattern: "edit*" }]), { status: 200 })
+    }
+    return new Response("{}", { status: 200 })
+  }
+  const engine = createOpenCodeEngine({ manageHost: false, fetchImpl })
+  await engine.initialize()
+  try {
+    await engine.createSession({ title: "rp", directory: "/tmp/dirRP" })
+    await engine.listPermissions() // 聚合时记录每个授权请求的来源目录
+    requests.length = 0
+    await engine.replyPermission("p_scoped", { reply: "once" })
+    assert.ok(
+      requests.some((r) => r.method === "POST" && r.url.endsWith("/permission/p_scoped/reply?directory=%2Ftmp%2FdirRP")),
+      "reply for a scoped-origin permission carries the directory query"
+    )
+    await engine.replyPermission("p_plain", { reply: "once" })
+    const plainReply = requests.find((r) => r.method === "POST" && r.url.includes("/permission/p_plain/reply"))
+    assert.ok(plainReply, "reply for an unscoped-origin permission was issued")
+    assert.ok(!plainReply.url.includes("?"), "unscoped-origin reply keeps the byte-identical old path")
+  } finally {
+    await engine.dispose()
+  }
+})
+
+test("directory-scoped sessions: dedupe by id maps the reply to the scoped directory", async () => {
+  // 同 id 同时出现在无作用域与作用域列表时，作用域条目胜出；应答必须按作用域目录续带。
+  const requests = []
+  const fetchImpl = async (url, init = {}) => {
+    const u = String(url)
+    requests.push({ url: u, method: init.method ?? "GET" })
+    if (u.includes("/event")) return new Response("{}", { status: 200 })
+    if (u.endsWith("/session?directory=%2Ftmp%2FdirDupR") && init.method === "POST") {
+      return new Response(JSON.stringify({ id: "ses_dupr1" }), { status: 200 })
+    }
+    if (u.endsWith("/question?directory=%2Ftmp%2FdirDupR")) {
+      return new Response(JSON.stringify([{ id: "q_dupr", answers: ["scoped"] }]), { status: 200 })
+    }
+    if (u.endsWith("/question")) {
+      return new Response(JSON.stringify([{ id: "q_dupr", answers: ["stale"] }]), { status: 200 })
+    }
+    return new Response("{}", { status: 200 })
+  }
+  const engine = createOpenCodeEngine({ manageHost: false, fetchImpl })
+  await engine.initialize()
+  try {
+    await engine.createSession({ title: "dupr", directory: "/tmp/dirDupR" })
+    const questions = await engine.listQuestions()
+    assert.deepEqual(questions, [{ id: "q_dupr", answers: ["scoped"] }])
+    requests.length = 0
+    await engine.replyQuestion("q_dupr", [["A"]])
+    assert.ok(
+      requests.some((r) => r.method === "POST" && r.url.endsWith("/question/q_dupr/reply?directory=%2Ftmp%2FdirDupR")),
+      "dedupe must map the request id to the scoped directory (the winning entry)"
+    )
+  } finally {
+    await engine.dispose()
+  }
+})
+
+test("directory-scoped sessions: an unscoped re-list must not clear a request's directory mapping", async () => {
+  // 无作用域条目不携带目录信息：聚合时不得用它（undefined）覆盖已记录的来源目录映射。
+  const requests = []
+  let scopedHasQuestion = true
+  const fetchImpl = async (url, init = {}) => {
+    const u = String(url)
+    requests.push({ url: u, method: init.method ?? "GET" })
+    if (u.includes("/event")) return new Response("{}", { status: 200 })
+    if (u.endsWith("/session?directory=%2Ftmp%2FdirKeep") && init.method === "POST") {
+      return new Response(JSON.stringify({ id: "ses_keep1" }), { status: 200 })
+    }
+    if (u.endsWith("/question?directory=%2Ftmp%2FdirKeep")) {
+      const body = scopedHasQuestion ? [{ id: "q_keep", question: "still open?" }] : []
+      return new Response(JSON.stringify(body), { status: 200 })
+    }
+    if (u.endsWith("/question")) {
+      return new Response(JSON.stringify([{ id: "q_keep", question: "stale unscoped view" }]), { status: 200 })
+    }
+    return new Response("{}", { status: 200 })
+  }
+  const engine = createOpenCodeEngine({ manageHost: false, fetchImpl })
+  await engine.initialize()
+  try {
+    await engine.createSession({ title: "keep", directory: "/tmp/dirKeep" })
+    await engine.listQuestions() // 作用域视图出现 q_keep：记录来源目录
+    scopedHasQuestion = false
+    await engine.listQuestions() // 作用域视图已空，无作用域视图仍残留同 id
+    requests.length = 0
+    await engine.replyQuestion("q_keep", [["A"]])
+    assert.ok(
+      requests.some((r) => r.method === "POST" && r.url.endsWith("/question/q_keep/reply?directory=%2Ftmp%2FdirKeep")),
+      "unscoped entries must not overwrite/clear the recorded origin directory"
+    )
+  } finally {
+    await engine.dispose()
+  }
+})
+
 test("directory-scoped sessions: a failed scoped list fetch degrades to the unscoped list", async () => {
   const requests = []
   const fetchImpl = async (url, init = {}) => {
