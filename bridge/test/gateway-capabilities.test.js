@@ -208,6 +208,29 @@ test("provisionPiMcp writes mcp.json and merges settings.json extensions", () =>
   }
 })
 
+// settings.json 内容为合法 JSON 但非对象（如 5）时，ESM 严格模式下对原始值属性赋值会抛
+// TypeError 崩启动——解析后必须守卫归零为 {} 再合并 extensions。
+test("provisionPiMcp survives a non-object settings.json and still writes extensions", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "gwad-"))
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "gwst-"))
+  try {
+    const entry = path.join(base, "node_modules", "pi-mcp-adapter", "dist", "index.js")
+    fs.mkdirSync(path.dirname(entry), { recursive: true })
+    fs.writeFileSync(entry, "export default {}")
+    const agentDir = path.join(stateDir, "pi", "agent")
+    fs.mkdirSync(agentDir, { recursive: true })
+    fs.writeFileSync(path.join(agentDir, "settings.json"), "5")
+    const result = provisionPiMcp(MCP, { stateDir, repoRoot: base })
+    const settingsFile = path.join(agentDir, "settings.json")
+    assert.ok(result.files.includes(settingsFile))
+    const settings = JSON.parse(fs.readFileSync(settingsFile, "utf8"))
+    assert.deepEqual(settings, { extensions: [entry] }) // 崩坏内容被替换而非合并
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true })
+    fs.rmSync(stateDir, { recursive: true, force: true })
+  }
+})
+
 test("provisionPiMcp warns and skips when the adapter is not installed", () => {
   const warnings = []
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "gwst-"))

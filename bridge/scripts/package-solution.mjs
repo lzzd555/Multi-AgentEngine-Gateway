@@ -43,7 +43,12 @@ async function copy(from, to) {
 
 async function main() {
   const listOnly = process.argv.includes("--list-deps")
-  const closure = collectClosure([gatewayEntry])
+  // collectClosure 只跟随 import 边；tls-compat-shim.cjs 是 gateway-config.js 经
+  // new URL("../tls-compat-shim.cjs", import.meta.url) 引用的运行时依赖（非 import 边），
+  // 必须作为种子显式入闭包，否则 zip 内 pi 引擎注入 NODE_OPTIONS=--require "<缺失路径>" 而 Node 硬失败。
+  // 种子取 bridgeSrc 根下的 shim：落点 code/bridge/src/tls-compat-shim.cjs，与包内
+  // code/bridge/src/gateway/gateway-config.js 的 ../tls-compat-shim.cjs URL 解析一致。
+  const closure = collectClosure([gatewayEntry, path.join(bridgeSrc, "tls-compat-shim.cjs")])
   if (listOnly) {
     for (const file of closure) console.log(path.relative(bridgeSrc, file))
     return

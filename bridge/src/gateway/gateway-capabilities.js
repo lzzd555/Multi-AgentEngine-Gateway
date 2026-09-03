@@ -218,6 +218,8 @@ export function provisionPiMcp(mcp, { stateDir, repoRoot = resolveRepoRoot(), wa
     } catch {
       settings = {}
     }
+    // 内容为合法 JSON 但非对象（如 5）：ESM 严格模式下对原始值属性赋值会抛 TypeError 崩启动。
+    if (typeof settings !== "object" || settings === null || Array.isArray(settings)) settings = {}
   }
   const extensions = new Set(Array.isArray(settings.extensions) ? settings.extensions : [])
   extensions.add(adapterEntry)

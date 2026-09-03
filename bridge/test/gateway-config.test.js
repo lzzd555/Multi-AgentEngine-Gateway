@@ -467,6 +467,22 @@ test("opencode merges mcp into the generated opencode.json", () => {
   }
 })
 
+// 直调形态：loadGatewayConfig 保证 model 段存在，但 provisionEngineConfig 可被直调，
+// mcp-only 且 config.model 完全缺失时不得因 buildOpenCodeProviderConfig(undefined) 抛错。
+test("opencode mcp-only without a model section writes an mcp-only opencode.json", () => {
+  const config = { engines: {}, skills: [], mcp: MCP_CONFIG }
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "gwmcp-oc-nomodel-"))
+  try {
+    const result = provisionEngineConfig("opencode", config, { stateDir })
+    assert.equal(result.env.OPENCODE_CONFIG, path.join(stateDir, "opencode", "opencode.json"))
+    const generated = JSON.parse(fs.readFileSync(result.env.OPENCODE_CONFIG, "utf8"))
+    assert.deepEqual(Object.keys(generated), ["mcp"]) // 只含 mcp 段，无 provider 段
+    assert.equal(generated.mcp.fetch.command[0], "npx") // opencode 段保留完整 command 数组
+  } finally {
+    fs.rmSync(stateDir, { recursive: true, force: true })
+  }
+})
+
 test("omp writes mcp.json beside models.yml", () => {
   const config = { model: MODEL, engines: {}, skills: [], mcp: MCP_CONFIG }
   const stateDir = fs.mkdtempSync(path.join(os.homedir(), ".gwmcp-omp-"))

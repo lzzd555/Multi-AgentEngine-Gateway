@@ -242,7 +242,9 @@ export function provisionEngineConfig(engineId, config, { stateDir = resolveStat
       // 生成文件可能含明文 API key，目录与文件都必须仅属主可读写。
       mkdirSync(dir, { recursive: true, mode: 0o700 })
       const content = {
-        ...buildOpenCodeProviderConfig(config.model),
+        // 直调形态下 config.model 可完全缺失（loadGatewayConfig 保证存在）；mcp-only 时
+        // 不能让 buildOpenCodeProviderConfig(undefined) 抛错，provider 段仅在非空时并入。
+        ...(hasProviders ? { ...buildOpenCodeProviderConfig(config.model) } : {}),
         ...(hasMcp ? { mcp: buildOpenCodeMcpSection(mcp) } : {})
       }
       writeFileSync(file, `${JSON.stringify(content, null, 2)}\n`, { mode: 0o600 })
