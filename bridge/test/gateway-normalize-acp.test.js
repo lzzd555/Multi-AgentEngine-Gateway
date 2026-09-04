@@ -10,7 +10,7 @@ function assistantMessage(parts, { created = CREATED } = {}) {
   return { info: { id: "msg_2", role: "assistant", sessionID: "s1", time: { created } }, parts }
 }
 
-test("a completed turn yields finish=stop with a trailing step-finish", () => {
+test("a completed interleaved turn splits into step messages ending with an assistant stop", () => {
   const normalized = normalizeAcpMessages([
     { info: { id: "msg_1", role: "user", sessionID: "s1", time: { created: CREATED } }, parts: [{ type: "text", text: "打开Outlook" }] },
     assistantMessage([
@@ -19,28 +19,59 @@ test("a completed turn yields finish=stop with a trailing step-finish", () => {
       { type: "text", text: "已打开" }
     ])
   ])
-  assert.equal(normalized.length, 3) // user + assistant + tool result
-  const assistant = normalized[1]
-  assert.equal(assistant.info.finish, "stop")
-  assert.deepEqual(assistant.parts.map((part) => part.type), ["text", "step-finish", "tool", "step-finish", "text", "step-finish"])
-  assert.deepEqual(assistant.tool_calls, [{ id: "call_001", name: "launch", arguments: { app: "outlook" } }])
-  assert.deepEqual(normalized[2], {
+  // 规范 §8.4：末条消息必须是 assistant(finish=stop, 含 step-finish)——OMP 单条大消息按 step 拆分后：
+  // user → 文本段 assistant → 工具段 assistant → 工具结果 → 收尾文本段 assistant
+  assert.equal(normalized.length, 5)
+  assert.deepEqual(normalized.map((message) => message.role), ["user", "assistant", "assistant", "tool", "assistant"])
+  assert.deepEqual(normalized[1].parts.map((part) => part.type), ["text", "step-finish"])
+  assert.equal(normalized[1].content, "好的")
+  assert.equal(normalized[1].info.finish, "stop")
+  assert.deepEqual(normalized[2].tool_calls, [{ id: "call_001", name: "launch", arguments: { app: "outlook" } }])
+  assert.equal(normalized[2].info.finish, "tool-calls")
+  assert.deepEqual(normalized[3], {
     id: "call_001:result", role: "tool", tool_call_id: "call_001", tool_name: "launch", content: "exit 0",
     created_at: new Date(CREATED).toISOString()
   })
+  const tail = normalized.at(-1)
+  assert.equal(tail.role, "assistant")
+  assert.equal(tail.info.finish, "stop")
+  assert.equal(tail.content, "已打开")
+  assert.deepEqual(tail.parts.map((part) => part.type), ["text", "step-finish"])
 })
 
-test("a busy turn yields finish=tool-calls and no trailing step-finish", () => {
+test("a completed tool-only tail appends a closing assistant so the turn ends assistant-first", () => {
+  const normalized = normalizeAcpMessages([
+    assistantMessage([
+      { type: "tool", tool: "write", callID: "call_9", state: { status: "completed", input: {}, output: "wrote" } }
+    ])
+  ])
+  assert.deepEqual(normalized.map((message) => message.role), ["assistant", "tool", "assistant"])
+  const tail = normalized.at(-1)
+  assert.equal(tail.info.finish, "stop")
+  assert.deepEqual(tail.parts, [{ type: "step-finish" }])
+})
+
+test("a single-text message keeps the historical one-message shape", () => {
+  const normalized = normalizeAcpMessages([assistantMessage([{ type: "text", text: "完成" }])])
+  assert.equal(normalized.length, 1)
+  assert.equal(normalized[0].id, "msg_2")
+  assert.equal(normalized[0].info.finish, "stop")
+  assert.deepEqual(normalized[0].parts.map((part) => part.type), ["text", "step-finish"])
+})
+
+test("a busy turn yields finish=tool-calls on the tail segment and no trailing step-finish", () => {
   const normalized = normalizeAcpMessages([
     assistantMessage([
       { type: "text", text: "正在处理" },
       { type: "tool", tool: "search", callID: "call_002", state: { status: "running", input: { q: "x" } } }
     ])
   ], { busy: true })
-  const assistant = normalized[0]
-  assert.equal(assistant.info.finish, "tool-calls")
-  assert.equal(assistant.parts.at(-1).type, "tool") // still running, no trailing finish
-  assert.equal(normalized.length, 1) // no tool result while running
+  // 文本段（中间步骤）+ 工具段（忙碌尾）：尾段 finish=tool-calls 且无 step-finish，无收尾消息
+  assert.equal(normalized.length, 2)
+  assert.deepEqual(normalized.map((message) => message.role), ["assistant", "assistant"])
+  const tail = normalized.at(-1)
+  assert.equal(tail.info.finish, "tool-calls")
+  assert.equal(tail.parts.at(-1).type, "tool") // still running, no trailing finish
 })
 
 test("a completed reasoning-only turn still yields a trailing step-finish", () => {
