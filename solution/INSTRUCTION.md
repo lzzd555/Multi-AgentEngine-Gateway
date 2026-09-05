@@ -29,7 +29,10 @@
    `baseUrl` 需与密钥类型匹配：GLM Coding 订阅 key 用 `https://api.z.ai/api/coding/paas/v4`（上例默认；订阅 key 在标准 paas 端点一律 429），智谱按量付费 key 改为 `https://api.z.ai/api/paas/v4`（详见 `code/solution/config-templates/README.md` 第 4 节）。网关启动时自动在 `~/.multi-agentengine-gateway/` 下为所选引擎生成隔离配置并注入，**无需手工修改各引擎配置文件**。Windows 下持久生效用 `setx ZAI_API_KEY <key>`（需新开一个终端窗口才对后续进程生效）；仅当前会话生效用 PowerShell 的 `$env:ZAI_API_KEY = "<key>"`（或 cmd 的 `set ZAI_API_KEY=<key>`）；macOS/Linux 用 `export ZAI_API_KEY=<key>`。
    可选路径（引擎侧直配）：不走统一配置时，按 `code/solution/config-templates/README.md` 的「引擎侧直配（可选）」把 provider 配置并入对应引擎，并以 `GATEWAY_DEFAULT_MODEL=zaicoding/glm-5.2` 启动网关；默认端点 `https://api.z.ai/api/paas/v4` 已直接写入模板，自定义端点时导出 `ZAI_BASE_URL=<自定义地址>` 并把配置中 `baseURL` 一行手工改为该值（网关与引擎都不会自动展开该变量）。
 4. 可选：统一能力供给（skills / MCP）。在同一 `gateway.config.json` 中追加 `skills`（SKILL.md 技能目录的路径数组）与 `mcp`（MCP server 声明）两段，网关启动时自动同步到所选引擎的隔离位置，三引擎均支持。`mcp` 兼容标准 mcpServers 格式——`command` 可为字符串配合 `args` 数组、`type` 可省略、整段 `{"mcpServers": {...}}` 外壳可直接贴入；`env`/`headers` 值支持 `{{VAR}}`/`${VAR}`/`$VAR` 环境变量引用（启动前 `export` 对应变量，网关展开后注入；未设置时启动警告并保留原样）。示例与各引擎映射（PI 的 MCP 需 `npm install` 装配 adapter）见 `code/solution/config-templates/README.md` 的「能力供给」一节。
-5. 依赖安装：可选 `npm install`——本地化 PI（`@automatalabs/pi-acp`）与 `pi-mcp-adapter`（optionalDependencies，离线/安装失败不阻断）；未安装时 PI 适配器经 npx 拉起（首跑会下载、较慢），OpenCode/OMP 不受影响，网关核心仍零依赖。
+5. 可选：能力开关与 prompt 超时重试（同在 `gateway.config.json`）：
+   - `"tools": { "webSearch": false }`——不给模型暴露网络搜索工具。评测环境外网搜索不可达时建议开启：模型看到清单里有搜索工具会对资讯类任务反复调用、在注定失败的搜索上空耗回合（实测单任务多花数分钟）。三引擎映射：OpenCode 写官方 `tools.websearch=false`；OMP 写 `config.yml` 的 `web_search.enabled=false`（行级合并，不动 OMP 自身配置）；PI 无内置 web 工具、天然无此问题。
+   - `"engines": { "opencode": { "promptTimeoutMs": 600000, "promptMaxAttempts": 3, "promptBackoff": "fixed" } }`——prompt 回合的最大时长与重试。模型服务存在快慢窗口（同用例 97s~600s+ 波动），单次固定上限会在慢窗口把可完成用例掐成 502；`promptMaxAttempts` 次尝试内超时自动中止残留回合并重发，`promptBackoff: exponential`（默认，第 N 次时长 = T×2^(N-1)）或 `fixed`（等额分段）。另有内置活动看门狗：尝试发起 360s 无任何引擎事件即判死重试（实测 provider 偶发停滞可单次调用 1200s 零 token）。对评测方完全透明（busy/SSE 语义不变），重试只记 stderr 警告。默认（不配置）行为与历史一致：单次 600s、不重试。
+6. 依赖安装：可选 `npm install`——本地化 PI（`@automatalabs/pi-acp`）与 `pi-mcp-adapter`（optionalDependencies，离线/安装失败不阻断）；未安装时 PI 适配器经 npx 拉起（首跑会下载、较慢），OpenCode/OMP 不受影响，网关核心仍零依赖。
 
 ## 执行方式
 

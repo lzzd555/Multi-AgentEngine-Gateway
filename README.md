@@ -14,6 +14,7 @@
 - 引擎切换：`--engine opencode|omp|pi` 或环境变量 `AGENT_ENGINE`
 - **网关统一配置** `gateway.config.json`：模型 provider 一处声明，启动时自动生成三引擎隔离配置（发现顺序与注入细节见 solution/config-templates/README.md）
 - **能力统一供给**：`skills` / `mcp` 两段一处声明——技能整目录复制到所选引擎的隔离 skills 目录，MCP server 按各引擎原生机制供给（OpenCode 并入生成文件 / OMP 经 ACP 协议下发 / PI 经 pi-mcp-adapter 装配），映射与验证状态见 solution/config-templates/README.md「能力供给」
+- **能力开关与健壮性**：`tools.webSearch=false` 一处声明禁用网络搜索（评测环境外网搜索不可达时避免模型空耗搜索回合，三引擎各自映射原生机制）；`engines.<id>.promptTimeoutMs / promptMaxAttempts / promptBackoff` 声明 prompt 回合最大时长与超时重试（exponential 倍增或 fixed 等额分段），内置活动看门狗对"单次调用挂死零 token"的 provider 停滞自动判死重试——对评测方透明，默认行为与历史一致
 
 ## 快速开始
 
@@ -53,7 +54,9 @@ docs/superpowers/          设计文档、实施计划、实测记录（run-note
 
 ## 实测状态
 
-OpenCode 1.18.26 / OMP 18.1.2 / PI(pi-acp 0.5.0) 三引擎经网关接入 GLM5.2 后 rehearsal 均 10/10（macOS）：2026-09-02 引擎侧直配路径，2026-09-03 网关统一配置路径（含 opencode/omp 干净 HOME 复验，见 `docs/superpowers/plans/2026-09-02-unified-gateway-config-run-notes.md`）。详见 `docs/superpowers/plans/2026-09-01-multi-engine-gateway-run-notes.md`。2026-09-03 能力供给三引擎实测（skills 全绿；MCP OpenCode/PI 全绿、OMP remote 绿 + 慢启动 server 需 omp≥18.1.3），详见 `docs/superpowers/plans/2026-09-03-unified-skills-mcp-run-notes.md`。待办：Windows 实机复验、评测全量用例。
+OpenCode 1.18.26 / OMP 18.1.5 / PI(pi-acp 0.5.5 本地) 三引擎经网关接入 GLM5.2 后 rehearsal 均 10/10（macOS）：2026-09-02 引擎侧直配路径，2026-09-03 网关统一配置路径（含 opencode/omp 干净 HOME 复验，见 `docs/superpowers/plans/2026-09-02-unified-gateway-config-run-notes.md`）。详见 `docs/superpowers/plans/2026-09-01-multi-engine-gateway-run-notes.md`。2026-09-03 能力供给三引擎实测（skills 全绿；MCP OpenCode/PI 全绿、OMP remote 绿 + 慢启动 server 需 omp≥18.1.3），详见 `docs/superpowers/plans/2026-09-03-unified-skills-mcp-run-notes.md`。
+
+10 用例 × 三引擎全量评测多轮实测（2026-09-04/05，10/10 用例为 office 文档/表格/PPT/资讯类真实任务）：三引擎均通过（个别用例受模型服务快慢窗口影响偶有超时，启用 prompt 超时重试后恢复）；`test/run-cases.mjs` 单引擎串行、`test/run-parallel.mjs` 三引擎并发（实测整轮 95min → 34min）。耗时归因（journal 时间戳差分）：>95% 在模型推理、工具执行≈0、网关开销≈0。各轮完整对话记录、引擎 journal 与网关/运行器日志归档于 `test/评测存档/<日期>-<轮次>/`。待办：Windows 实机复验、评测全量用例。
 
 ## 来源与许可
 
