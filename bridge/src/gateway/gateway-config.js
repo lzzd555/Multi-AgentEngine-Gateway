@@ -80,8 +80,31 @@ function validateEngines(engines, sourcePath) {
         throw new Error(`${sourcePath}: engines.${id}.model must look like providerID/modelID`)
       }
     }
+    // 引擎层 prompt 超时与倍增重试（见 engines/prompt-retry.js）：第 1 次尝试的时长上限与总尝试次数。
+    if (engine.promptTimeoutMs !== undefined && (!Number.isInteger(engine.promptTimeoutMs) || engine.promptTimeoutMs <= 0)) {
+      throw new Error(`${sourcePath}: engines.${id}.promptTimeoutMs must be a positive integer`)
+    }
+    if (engine.promptMaxAttempts !== undefined && (!Number.isInteger(engine.promptMaxAttempts) || engine.promptMaxAttempts < 1)) {
+      throw new Error(`${sourcePath}: engines.${id}.promptMaxAttempts must be an integer >= 1`)
+    }
   }
   return engines
+}
+
+// tools 段：跨引擎的能力开关，各引擎尽力映射到原生机制（映射细节见 provisionEngineConfig）。
+function validateTools(tools, sourcePath) {
+  if (tools === undefined) return {}
+  if (typeof tools !== "object" || tools === null || Array.isArray(tools)) {
+    throw new Error(`${sourcePath}: tools must be an object`)
+  }
+  if (tools.webSearch !== undefined && typeof tools.webSearch !== "boolean") {
+    throw new Error(`${sourcePath}: tools.webSearch must be a boolean`)
+  }
+  const known = ["webSearch"]
+  for (const key of Object.keys(tools)) {
+    if (!known.includes(key)) throw new Error(`${sourcePath}: Unknown tools key '${key}'. Available: ${known.join(", ")}`)
+  }
+  return tools
 }
 
 export function validateGatewayConfig(parsed, sourcePath, environment = process.env) {
@@ -132,6 +155,7 @@ export function validateGatewayConfig(parsed, sourcePath, environment = process.
     engines,
     skills: validateSkills(parsed.skills, sourcePath),
     mcp: mcpServers,
+    tools: validateTools(parsed.tools, sourcePath),
     warnings
   }
 }
@@ -224,6 +248,41 @@ export function buildPiModelsJson(model) {
   return { providers }
 }
 
+// OMP 的 config.yml 是 omp 自己运行期读写的设置文件（主题、用户偏好都落在这里），网关不能整文件
+// 重生成——只做行级手术合并：增/改一个 `section.key` 条目，其余行（含注释）逐字保留。
+// 仅支持网关需要的两级布尔开关形态；YAML 高级特性出现在同节内时原样保留、不解析。
+export function upsertOmpConfigYamlEntry(lines, section, key, value) {
+  const output = [...lines]
+  const headerIndex = output.findIndex((line) => new RegExp(`^${section}:\\s*(#.*)?$`).test(line))
+  if (headerIndex === -1) {
+    if (output.length > 0 && output[output.length - 1].trim() !== "") output.push("")
+    output.push(`${section}:`, `  ${key}: ${value}`)
+    return output
+  }
+  const keyPattern = new RegExp(`^(\\s*)${key}:`)
+  for (let i = headerIndex + 1; i < output.length; i += 1) {
+    if (/^\S/.test(output[i])) break // 下一个顶层键：节结束
+    const match = keyPattern.exec(output[i])
+    if (match) {
+      const comment = /(#.*)$/.exec(output[i])?.[1] ?? ""
+      output[i] = `${match[1]}${key}: ${value}${comment ? ` ${comment}` : ""}`
+      return output
+    }
+  }
+  output.splice(headerIndex + 1, 0, `  ${key}: ${value}`)
+  return output
+}
+
+// web_search.enabled=false 让 omp 不再把 web_search 宣告给模型（实测：false 时工具清单中消失）。
+// 本机网络到各免费搜索源不可达/被反爬时，禁用可避免模型在注定失败的搜索上空耗回合。
+function writeOmpWebSearchDisabled(dir, { readFileSync = fs.readFileSync, writeFileSync = fs.writeFileSync, existsSync = fs.existsSync } = {}) {
+  const file = path.join(dir, "config.yml")
+  const existing = existsSync(file) ? readFileSync(file, "utf8").split(/\r?\n/) : []
+  const lines = upsertOmpConfigYamlEntry(existing, "web_search", "enabled", false)
+  writeFileSync(file, `${lines.join("\n").replace(/\n+$/, "")}\n`, { mode: 0o600 })
+  return file
+}
+
 // OMP 的 PI_CONFIG_DIR 语义是 home 下的相对目录名（path.join(homedir(), value)），
 // 绝对路径会被拼坏，因此 stateDir 必须位于 home 之下（规格 §3）。
 function ompConfigDirName(stateDir, home = homedir()) {
@@ -241,12 +300,15 @@ export function provisionEngineConfig(engineId, config, { stateDir = resolveStat
   const hasSkills = skills.length > 0
   const mcp = config?.mcp ?? {}
   const hasMcp = Object.keys(mcp).length > 0
-  if (!hasProviders && !hasSkills && !hasMcp) return { env: {}, files: [] }
+  // tools.webSearch=false：不给模型暴露网络搜索工具。评测环境外网搜索不可达时，模型会在注定
+  // 失败的搜索上烧掉多轮推理（实测 office_139）；关掉它让模型从一开始就走 bash/直接抓取路径。
+  const disableWebSearch = config?.tools?.webSearch === false
+  if (!hasProviders && !hasSkills && !hasMcp && !disableWebSearch) return { env: {}, files: [] }
   const files = []
   const env = {}
   const addEnv = (entries) => Object.assign(env, entries)
   if (engineId === "opencode") {
-    if (hasProviders || hasMcp) {
+    if (hasProviders || hasMcp || disableWebSearch) {
       const dir = path.join(stateDir, "opencode")
       const file = path.join(dir, "opencode.json")
       // 生成文件可能含明文 API key，目录与文件都必须仅属主可读写。
@@ -254,8 +316,13 @@ export function provisionEngineConfig(engineId, config, { stateDir = resolveStat
       const content = {
         // 直调形态下 config.model 可完全缺失（loadGatewayConfig 保证存在）；mcp-only 时
         // 不能让 buildOpenCodeProviderConfig(undefined) 抛错，provider 段仅在非空时并入。
+        // tools.websearch=false 是 OpenCode 官方 schema 的按工具禁用键（Config.properties.tools，
+        // additionalProperties: boolean——https://opencode.ai/config.json）；注意必须用复数 tools，
+        // 单数 tool 是未知键、会被静默忽略（"不报错"≠"已禁用"）。webfetch（直接抓 URL，评测中
+        // 实际可用）不受影响。
         ...(hasProviders ? { ...buildOpenCodeProviderConfig(config.model) } : {}),
-        ...(hasMcp ? { mcp: buildOpenCodeMcpSection(mcp) } : {})
+        ...(hasMcp ? { mcp: buildOpenCodeMcpSection(mcp) } : {}),
+        ...(disableWebSearch ? { tools: { websearch: false } } : {})
       }
       writeFileSync(file, `${JSON.stringify(content, null, 2)}\n`, { mode: 0o600 })
       files.push(file)
@@ -276,6 +343,10 @@ export function provisionEngineConfig(engineId, config, { stateDir = resolveStat
       writeFileSync(file, buildOmpModelsYaml(config.model), { mode: 0o600 })
       files.push(file)
     }
+    if (disableWebSearch) {
+      mkdirSync(dir, { recursive: true, mode: 0o700 })
+      files.push(writeOmpWebSearchDisabled(dir))
+    }
     if (hasSkills) files.push(...provisionSkills("omp", skills, { stateDir }).files)
     if (hasMcp) {
       mkdirSync(dir, { recursive: true, mode: 0o700 })
@@ -290,6 +361,8 @@ export function provisionEngineConfig(engineId, config, { stateDir = resolveStat
     return { env, files }
   }
   if (engineId === "pi") {
+    // PI（pi-acp 0.5.x）无内置网络搜索工具（评测实证：纯 bash/write 轨迹），
+    // tools.webSearch 开关对 pi 天然 no-op，无需映射。
     const dir = path.join(stateDir, "pi", "agent")
     if (hasProviders) {
       mkdirSync(dir, { recursive: true, mode: 0o700 })
@@ -342,8 +415,12 @@ export function assembleGatewayRuntime(options, config, environment = process.en
   if (!config) return { engineOptions: {} }
   const provisioned = provision(options.engine, config, { stateDir })
   const override = resolveEngineCommand(options.engine, config, environment)
+  const engineConfig = config.engines?.[options.engine] ?? {}
   const engineOptions = {
     ...(override ?? {}),
+    // prompt 超时/重试仅在显式配置时下发（缺省不注入，引擎与重试层各守默认 600s × 1 次）
+    ...(engineConfig.promptTimeoutMs !== undefined ? { promptTimeoutMs: engineConfig.promptTimeoutMs } : {}),
+    ...(engineConfig.promptMaxAttempts !== undefined ? { promptMaxAttempts: engineConfig.promptMaxAttempts } : {}),
     ...(Object.keys(provisioned.env).length > 0 ? { env: provisioned.env } : {}),
     // omp 的 ACP 模式不从磁盘 mcp.json 发现 MCP（enableMCP:false），只能由网关（ACP 客户端）经
     // session/new.mcpServers 下发；pi/opencode 仍走各自的文件供给路径，收到 mcp 也不消费。

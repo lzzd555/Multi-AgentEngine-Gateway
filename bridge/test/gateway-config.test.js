@@ -11,6 +11,7 @@ import {
   expandHome,
   nodeOptionsWithTlsShim,
   provisionEngineConfig,
+  upsertOmpConfigYamlEntry,
   resolveStateDir,
   buildOmpModelsYaml,
   buildPiModelsJson,
@@ -628,4 +629,87 @@ test("assembleGatewayRuntime forwards configured mcp through engineOptions", () 
   } finally {
     fs.rmSync(stateDir, { recursive: true, force: true })
   }
+})
+
+test("tools.webSearch=false disables websearch in generated opencode.json (also stands alone)", () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "gwtool-"))
+  try {
+    const withProviders = provisionEngineConfig("opencode", { ...VALID, tools: { webSearch: false } }, { stateDir })
+    const written = JSON.parse(fs.readFileSync(withProviders.env.OPENCODE_CONFIG, "utf8"))
+    // 必须是复数 tools（官方 schema Config.properties.tools）；单数 tool 是未知键、会被静默忽略
+    assert.deepEqual(written.tools, { websearch: false })
+    assert.equal(written.tool, undefined)
+    // 只有 tools 段（无 providers/mcp/skills）也要生成 opencode.json——开关独立生效
+    const standalone = provisionEngineConfig("opencode", { model: { providers: {}, default: "" }, engines: {}, skills: [], mcp: {}, tools: { webSearch: false } }, { stateDir })
+    assert.ok(standalone.env.OPENCODE_CONFIG, "tools-only config still provisions opencode.json")
+    const only = JSON.parse(fs.readFileSync(standalone.env.OPENCODE_CONFIG, "utf8"))
+    assert.deepEqual(only, { tools: { websearch: false } })
+    // 未关闭时不写 tools 段
+    const enabled = provisionEngineConfig("opencode", VALID, { stateDir })
+    assert.equal(JSON.parse(fs.readFileSync(enabled.env.OPENCODE_CONFIG, "utf8")).tools, undefined)
+  } finally {
+    fs.rmSync(stateDir, { recursive: true, force: true })
+  }
+})
+
+test("tools.webSearch=false writes web_search.enabled=false into omp config.yml (idempotent merge)", () => {
+  // stateDir 必须位于 home 之下（PI_CONFIG_DIR 是 home 相对名），用 home 下的临时目录
+  const stateDir = fs.mkdtempSync(path.join(os.homedir(), ".gwtool2-"))
+  const warnings = []
+  try {
+    const ompResult = provisionEngineConfig("omp", { ...VALID, tools: { webSearch: false } }, { stateDir, warn: (m) => warnings.push(m) })
+    const configYml = fs.readFileSync(path.join(stateDir, "omp", "agent", "config.yml"), "utf8")
+    assert.match(configYml, /^web_search:\n  enabled: false\n$/)
+    assert.ok(ompResult.env.PI_CONFIG_DIR, "开关独立生效也注入 PI_CONFIG_DIR")
+    assert.equal(warnings.length, 0, "omp 原生支持 web_search.enabled，无需告警")
+    // 幂等合并：文件已有用户设置与已存在的 enabled 行时，只改目标行、其余逐字保留
+    fs.writeFileSync(path.join(stateDir, "omp", "agent", "config.yml"), "appearance:\n  theme.dark = titanium\nweb_search:\n  enabled: true # 用户注释\n")
+    provisionEngineConfig("omp", { ...VALID, tools: { webSearch: false } }, { stateDir, warn: (m) => warnings.push(m) })
+    const merged = fs.readFileSync(path.join(stateDir, "omp", "agent", "config.yml"), "utf8")
+    assert.match(merged, /theme\.dark = titanium/)
+    assert.match(merged, /enabled: false # 用户注释/)
+    assert.doesNotMatch(merged, /enabled: true/)
+    // pi 无内置 web 工具：无文件副作用、无告警
+    const piResult = provisionEngineConfig("pi", { ...VALID, tools: { webSearch: false } }, { stateDir, warn: (m) => warnings.push(m) })
+    assert.equal(fs.existsSync(path.join(stateDir, "pi", "agent", "config.yml")), false)
+    assert.equal(piResult.env.PI_CODING_AGENT_DIR, path.join(stateDir, "pi", "agent"))
+    assert.equal(warnings.length, 0, "pi 无告警")
+  } finally {
+    fs.rmSync(stateDir, { recursive: true, force: true })
+  }
+})
+
+test("upsertOmpConfigYamlEntry handles missing section, missing key, and preserves neighbors", () => {
+  const created = upsertOmpConfigYamlEntry([], "web_search", "enabled", false)
+  assert.deepEqual(created, ["web_search:", "  enabled: false"])
+  const inserted = upsertOmpConfigYamlEntry(["appearance:", "  theme: dark", "web_search:", "  provider: mojeek"], "web_search", "enabled", false)
+  assert.deepEqual(inserted, ["appearance:", "  theme: dark", "web_search:", "  enabled: false", "  provider: mojeek"])
+  const appended = upsertOmpConfigYamlEntry(["appearance:", "  theme: dark"], "web_search", "enabled", false)
+  assert.deepEqual(appended, ["appearance:", "  theme: dark", "", "web_search:", "  enabled: false"])
+  const replaced = upsertOmpConfigYamlEntry(["a: 1", "web_search:", "  enabled: true", "b: 2"], "web_search", "enabled", false)
+  assert.deepEqual(replaced, ["a: 1", "web_search:", "  enabled: false", "b: 2"])
+})
+
+test("tools section shape is validated", () => {
+  withTempConfig({ ...VALID, tools: { webSearch: "off" } }, (file) => assert.throws(() => loadGatewayConfig({ configPath: file }), /webSearch must be a boolean/))
+  withTempConfig({ ...VALID, tools: { frobnicate: true } }, (file) => assert.throws(() => loadGatewayConfig({ configPath: file }), /Unknown tools key 'frobnicate'/))
+  withTempConfig({ ...VALID, tools: [] }, (file) => assert.throws(() => loadGatewayConfig({ configPath: file }), /tools must be an object/))
+})
+
+test("engines.<id> accepts promptTimeoutMs and promptMaxAttempts and passes them to engineOptions", () => {
+  const config = { ...VALID, engines: { opencode: { promptTimeoutMs: 300_000, promptMaxAttempts: 3 } } }
+  const runtime = assembleGatewayRuntime({ engine: "opencode" }, config, {}, { stateDir: "/tmp/gwprompt-na" })
+  assert.equal(runtime.engineOptions.promptTimeoutMs, 300_000)
+  assert.equal(runtime.engineOptions.promptMaxAttempts, 3)
+  // 未配置时不注入默认值——引擎侧行为与历史一致
+  const bare = assembleGatewayRuntime({ engine: "opencode" }, { ...VALID, engines: {} }, {}, { stateDir: "/tmp/gwprompt-na" })
+  assert.equal(bare.engineOptions.promptTimeoutMs, undefined)
+  assert.equal(bare.engineOptions.promptMaxAttempts, undefined)
+})
+
+test("prompt timeout and attempts are validated", () => {
+  withTempConfig({ ...VALID, engines: { opencode: { promptTimeoutMs: "60s" } } }, (file) => assert.throws(() => loadGatewayConfig({ configPath: file }), /promptTimeoutMs must be a positive integer/))
+  withTempConfig({ ...VALID, engines: { opencode: { promptTimeoutMs: 0 } } }, (file) => assert.throws(() => loadGatewayConfig({ configPath: file }), /promptTimeoutMs must be a positive integer/))
+  withTempConfig({ ...VALID, engines: { opencode: { promptMaxAttempts: 0 } } }, (file) => assert.throws(() => loadGatewayConfig({ configPath: file }), /promptMaxAttempts must be an integer >= 1/))
+  withTempConfig({ ...VALID, engines: { opencode: { promptMaxAttempts: 1.5 } } }, (file) => assert.throws(() => loadGatewayConfig({ configPath: file }), /promptMaxAttempts must be an integer >= 1/))
 })

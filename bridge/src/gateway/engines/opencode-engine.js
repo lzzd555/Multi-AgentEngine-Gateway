@@ -114,13 +114,13 @@ export function createOpenCodeEngine({
     return merged
   }
 
-  async function waitUntilIdle(sessionID) {
-    const deadline = Date.now() + promptTimeoutMs
+  async function waitUntilIdle(sessionID, timeoutMs = promptTimeoutMs) {
+    const deadline = Date.now() + timeoutMs
     // A freshly submitted turn is not marked busy instantly; polling before that moment must not
     // read as "turn over" (and a turn can even finish between two polls). Wait until busy was
     // observed at least once, or until the startup grace elapses — the grace must stay well below
     // the deadline so a never-busy turn still resolves instead of timing out.
-    const startupGraceMs = Math.min(2_000, Math.floor(promptTimeoutMs / 2))
+    const startupGraceMs = Math.min(2_000, Math.floor(timeoutMs / 2))
     const submittedAt = Date.now()
     let sawBusy = false
     while (Date.now() < deadline) {
@@ -129,7 +129,8 @@ export function createOpenCodeEngine({
       else if (sawBusy || Date.now() - submittedAt >= startupGraceMs) return
       await sleepImpl(pollIntervalMs)
     }
-    throw engineUnavailable(`OpenCode prompt timed out after ${promptTimeoutMs}ms`)
+    // promptTimeout 标记是引擎层重试的识别依据（prompt-retry.js 只重试带此标记的超时）。
+    throw Object.assign(engineUnavailable(`OpenCode prompt timed out after ${timeoutMs}ms`), { promptTimeout: true })
   }
 
   // Forward the upstream SSE stream to engine listeners, keeping only spec event types.
@@ -255,7 +256,7 @@ export function createOpenCodeEngine({
       return merged
     },
 
-    async prompt(sessionID, { text, model } = {}) {
+    async prompt(sessionID, { text, model, timeoutMs } = {}) {
       const modelPart = splitModel(model)
       const response = await request(scopedPath(sessionID, "/prompt_async"), {
         method: "POST",
@@ -267,7 +268,8 @@ export function createOpenCodeEngine({
       if (response.status !== 204 && response.status !== 200) {
         throw engineUnavailable(`OpenCode prompt_async returned HTTP ${response.status}`)
       }
-      await waitUntilIdle(sessionID)
+      // 调用级 timeoutMs（引擎层重试每轮倍增后下发）覆盖构造期默认；缺省保持原行为。
+      await waitUntilIdle(sessionID, timeoutMs)
     },
 
     async abort(sessionID) {

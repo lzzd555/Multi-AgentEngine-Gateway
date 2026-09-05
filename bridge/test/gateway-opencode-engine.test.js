@@ -583,3 +583,31 @@ test("directory-scoped sessions: a failed scoped list fetch degrades to the unsc
     await engine.dispose()
   }
 })
+
+test("per-call timeoutMs overrides the engine default and tags the timeout for retry", async () => {
+  await withFakeUpstream(async (_, port) => {
+    const engine = createOpenCodeEngine({ manageHost: false, upstreamPort: port, pollIntervalMs: 5, promptTimeoutMs: 120 })
+    await engine.initialize()
+    const { id } = await engine.createSession({ title: "t" })
+    await assert.rejects(
+      () => engine.prompt(id, { text: "hi", timeoutMs: 40 }),
+      (error) => error.promptTimeout === true
+        && error.code === "ENGINE_UNAVAILABLE"
+        && /timed out after 40ms/.test(error.message)
+    )
+    await engine.dispose()
+  })
+})
+
+test("constructor default timeout carries the same promptTimeout tag", async () => {
+  await withFakeUpstream(async (_, port) => {
+    const engine = createOpenCodeEngine({ manageHost: false, upstreamPort: port, pollIntervalMs: 5, promptTimeoutMs: 40 })
+    await engine.initialize()
+    const { id } = await engine.createSession({ title: "t" })
+    await assert.rejects(
+      () => engine.prompt(id, { text: "hi" }),
+      (error) => error.promptTimeout === true && /timed out after 40ms/.test(error.message)
+    )
+    await engine.dispose()
+  })
+})

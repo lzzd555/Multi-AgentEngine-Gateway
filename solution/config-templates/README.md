@@ -74,6 +74,33 @@
 
 错误处理：skill 路径不存在 / 目录缺 `SKILL.md` / 名字非法或重复、mcp 形态错误（`type`/`command`/`url`/`env`）——启动即报错退出，不生成任何文件；PI 配置了 mcp 但本地 adapter 未安装（未 `npm install`）时，网关 stderr 警告并忽略 mcp 段，引擎正常启动；skills/mcp 均未配置时行为与之前完全一致。
 
+### prompt 超时与倍增重试（engines.<id>，可选）
+
+评测中模型服务存在快慢窗口（同用例 97s~600s+ 波动），固定 600s 上限会在慢速窗口把可完成的用例掐成 502。统一配置可按引擎声明超时与重试：
+
+```json
+"engines": { "opencode": { "promptTimeoutMs": 300000, "promptMaxAttempts": 3 } }
+```
+
+- `promptTimeoutMs`：第 1 次尝试的最大时长（默认 600000，与历史一致）；`promptMaxAttempts`：总尝试次数（默认 1 = 不重试、行为与历史一致）
+- 第 N 次尝试的时长上限 = `promptTimeoutMs × 2^(N-1)`（第 2 次 2T、第 3 次 4T）——慢速窗口越等越值得等；**最坏总墙钟 = T+2T+4T…**（300s×3 次为 35min），配置时按评测总时限倒推
+- 重试语义等价于人工"中止后重问"：超时先经引擎 abort 掐掉残留回合再重发同一 prompt（office 类任务幂等）；仅超时触发重试，provider 报错等其他错误立即上抛
+- 对评测方完全透明：busy 状态与 SSE 事件流不受影响，重试只记 stderr 警告；耗尽次数后仍以 `ENGINE_UNAVAILABLE` → 502 收场（错误信息含各次预算，如 `budgets 300000/600000/1200000ms`）
+- 引擎差异：OpenCode 侧调用级 timeoutMs 直接约束其等待钟；OMP/PI 走 ACP，由网关外层竞速钟约束（另有 300s 不活动看门狗不变）
+
+### 能力开关（tools，可选）
+
+`tools.webSearch: false` 不给模型暴露网络搜索工具。评测环境外网搜索不可达时建议开启：模型看到清单里有 `web_search` 就会对资讯类任务反复调用，实测会在注定失败的搜索上烧掉多轮推理（慢速窗口下单任务多花数分钟）。
+
+三引擎映射：
+
+| 引擎 | 行为 |
+| --- | --- |
+| opencode | 生成的 `opencode.json` 写入原生 `tools.websearch = false`（官方 schema `Config.properties.tools`，键必须复数——单数 `tool` 是未知键会被静默忽略）；`webfetch`（直接抓 URL）不受影响 |
+| omp | 经 `$PI_CONFIG_DIR/agent/config.yml` 写入原生 `web_search.enabled = false`（行级手术合并，保留 omp 自己写入的用户设置；实证：false 后 web_search 从模型工具清单消失、true 时回归）。只关"搜索"，URL 抓取类工具不受影响 |
+| pi | pi-acp 无内置 web 工具（评测实证纯 bash/write 轨迹），天然 no-op |
+
+
 ## 引擎侧直配（可选）
 
 不走统一配置时，把 provider 配置按下面三节手工并入各引擎自己的配置文件，并用 `GATEWAY_DEFAULT_MODEL=zaicoding/glm-5.2` 指定默认模型。

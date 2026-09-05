@@ -43,3 +43,28 @@ test("conformance rejects non-objects outright", () => {
   assert.throws(() => assertEngineConformance(null), /engine is not an object/)
   assert.throws(() => assertEngineConformance(undefined), /engine is not an object/)
 })
+
+test("createEngine wires prompt timeout retry with doubling budgets (integration)", async () => {
+  const { createFakeOpencodeUpstream } = await import("./helpers/fake-opencode-upstream.js")
+  const upstream = await createFakeOpencodeUpstream()
+  const engine = createEngine("opencode", {
+    manageHost: false, upstreamPort: upstream.port, pollIntervalMs: 5,
+    promptTimeoutMs: 30, promptMaxAttempts: 2
+  })
+  try {
+    await engine.initialize()
+    const { id } = await engine.createSession({ title: "t" })
+    try {
+      await engine.prompt(id, { text: "hi" })
+      throw new Error("prompt 应当超时失败")
+    } catch (error) {
+      assert.equal(error.promptTimeout, true)
+      assert.match(error.message, /2 attempt/)
+      assert.match(error.message, /30\/60ms/)
+    }
+    assert.equal(upstream.state.promptResolvers.length, 2, "第 2 次尝试真的重发了 prompt（第 1 次超时后）")
+  } finally {
+    await engine.dispose().catch(() => {})
+    await upstream.close()
+  }
+})

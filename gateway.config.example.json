@@ -6,17 +6,38 @@
         "baseUrl": "https://api.z.ai/api/coding/paas/v4",
         "apiKey": "{env:ZAI_API_KEY}",
         "api": "openai-completions",
-        "models": { "glm-5.2": { "name": "GLM 5.2" } }
+        "models": {
+          "glm-5.2": {
+            "name": "GLM 5.2"
+          }
+        }
       }
     },
     "default": "zaicoding/glm-5.2"
   },
-  "skills": ["./skills/demo-skill"],
+  "skills": [
+    "./skills/demo-skill"
+  ],
   "mcp": {
-    "memory": { "type": "local", "command": ["npx", "-y", "@modelcontextprotocol/server-memory"] }
+    "memory": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "@modelcontextprotocol/server-memory"
+      ]
+    }
+  },
+  "tools": {
+    "$comment": "跨引擎能力开关。webSearch=false 不给模型暴露网络搜索工具（OpenCode 写入 tools.websearch=false；OMP 写入 config.yml 的 web_search.enabled=false——两键均已实证让工具从模型清单消失；PI 无 web 工具天然 no-op）。评测环境外网搜索不可达时建议开启，避免模型在注定失败的搜索上浪费推理轮。",
+    "webSearch": false
   },
   "engines": {
-    "opencode": {},
+    "opencode": {
+      "$comment": "可选：引擎层 prompt 超时与倍增重试。promptTimeoutMs=第1次尝试的最大时长（默认600000）；promptMaxAttempts=总尝试次数（默认1=不重试）；第N次尝试的时长=promptTimeoutMs×2^(N-1)，重试前自动中止残留回合。最坏总墙钟=T+2T+4T...，如 300s×3 次=35min。仅超时触发重试，其他错误立即上抛。",
+      "promptTimeoutMs": 300000,
+      "promptMaxAttempts": 3
+    },
     "omp": {},
     "pi": {}
   }
