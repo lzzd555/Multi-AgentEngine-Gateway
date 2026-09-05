@@ -119,3 +119,21 @@ test("engine-tagged prompt timeouts (OpenCode internal clock) also trigger the r
   assert.equal(await wrapped.prompt("s1", { text: "hi" }), "done")
   assert.equal(calls.aborts, 1)
 })
+
+test("retry warnings surface on stderr by default (no injected warn)", async () => {
+  const original = process.stderr.write.bind(process.stderr)
+  const seen = []
+  process.stderr.write = (chunk) => { seen.push(String(chunk)); return true }
+  try {
+    const { engine } = fakeEngine({ onPrompt: (attempt) => (attempt === 1 ? new Promise(() => {}) : "done") })
+    const clock = controlledSleep()
+    const wrapped = withPromptRetry(engine, { maxAttempts: 2, baseTimeoutMs: 1000, timeoutSlackMs: 0, sleepImpl: clock.sleep })
+    const result = wrapped.prompt("s1", { text: "hi" })
+    await tick()
+    clock.fire()
+    assert.equal(await result, "done")
+  } finally {
+    process.stderr.write = original
+  }
+  assert.ok(seen.some((line) => /prompt attempt 1\/2 timed out after 1000ms/.test(line)), `stderr 应出现重试告警，实际: ${JSON.stringify(seen)}`)
+})

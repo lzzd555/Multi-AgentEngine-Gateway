@@ -24,7 +24,8 @@ export function withPromptRetry(engine, {
   baseTimeoutMs = 600_000,
   timeoutSlackMs = 5_000,
   sleepImpl = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  warn = () => {}
+  // 默认走 stderr（网关日志通道），重试对评测方透明但对运维可见；测试可注入收集。
+  warn = (message) => process.stderr.write(`gateway prompt retry: ${message}\n`)
 } = {}) {
   if (!(Number.isInteger(maxAttempts) && maxAttempts > 1)) return engine
   return {
