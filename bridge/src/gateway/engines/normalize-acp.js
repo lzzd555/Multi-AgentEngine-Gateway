@@ -29,31 +29,6 @@ function clip(value) {
 }
 
 /**
- * Step boundary: a tool part after text ends a step, and text after tools ends the tool batch.
- * A trailing step-finish is only appended when the turn is over (the session is not busy), and it
- * is appended even when no text/tool part preceded it (reasoning/file-only tail), so a completed
- * message always carries a step-finish.
- */
-function assistantParts(parts, { busy }) {
-  const output = []
-  let previousKind = undefined
-  for (const part of parts ?? []) {
-    if (part?.type === "text") {
-      if (previousKind === "tool") output.push({ type: "step-finish" })
-      output.push({ type: "text", content: part.text ?? "" })
-      previousKind = "text"
-    } else if (part?.type === "tool") {
-      if (previousKind === "text") output.push({ type: "step-finish" })
-      output.push({ type: "tool", tool: part.tool, state: toolState(part.state) })
-      previousKind = "tool"
-    }
-    // reasoning and file parts are not part of the spec vocabulary
-  }
-  if (!busy) output.push({ type: "step-finish" })
-  return output
-}
-
-/**
  * OMP 把整回合的 text/tool 塞进同一条 assistant 消息；若整条输出后再展开工具结果，
  * 回合会以 tool 消息收尾，违反规范 §8.4"末条消息 role=assistant"。因此按 step 边界
  * （text 连续段 / tool 连续段交替）拆成多条消息：工具结果紧跟其请求段，最终文本段

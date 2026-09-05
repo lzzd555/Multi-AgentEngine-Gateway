@@ -44,7 +44,7 @@ npm run package             # 生成 solution.zip
 
 ```
 bridge/src/gateway/        网关核心（路由/SSE/会话表/交互队列/消息规范化）+ engines/ 适配器
-bridge/src/*.js            引擎驱动闭包（ACP/OpenCode 宿主，清单见 gateway/ENGINES-DEPS.md）
+bridge/src/*.js            引擎驱动闭包（ACP/OpenCode 宿主；允许清单由 bridge/test/gateway-import-boundary.test.js 强制，实际闭包可 `node bridge/scripts/package-solution.mjs --list-deps` 查看）
 bridge/test/               gateway 测试套件（含双引擎规范符合性测试）
 bridge/scripts/            打包（package-solution.mjs）与演练（gateway-rehearsal.mjs）
 solution/                  评测交付物（INSTRUCTION.md、启动包装、GLM 配置模板）

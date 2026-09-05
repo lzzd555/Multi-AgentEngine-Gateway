@@ -2,7 +2,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { normalizeAcpMessages, acpStatusToSpec } from "../src/gateway/engines/normalize-acp.js"
-import { isValidNormalizedMessage } from "../src/gateway/message-normalizer.js"
+import { isValidNormalizedMessage } from "./helpers/normalized-message.js"
 
 const CREATED = Date.UTC(2026, 8, 1, 10, 0, 0)
 

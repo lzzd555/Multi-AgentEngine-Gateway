@@ -33,11 +33,13 @@ export function createEventBus({
     })
     const write = (event) => response.write(`data: ${JSON.stringify(event)}\n\n`)
     write({ type: "server.connected", properties: {} })
-    connections.add(write)
+    // SSE connections register through the same subscribe() the tests observe, so there is a
+    // single listener mechanism on the bus.
+    const unsubscribe = subscribe(write)
     const timer = setIntervalImpl(() => write({ type: "server.heartbeat", properties: {} }), heartbeatMs)
     request.on("close", () => {
       clearIntervalImpl(timer)
-      connections.delete(write)
+      unsubscribe()
     })
   }
 

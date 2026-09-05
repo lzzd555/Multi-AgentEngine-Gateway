@@ -2,7 +2,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { normalizeOpenCodeMessages } from "../src/gateway/engines/normalize-opencode.js"
-import { isValidNormalizedMessage } from "../src/gateway/message-normalizer.js"
+import { isValidNormalizedMessage } from "./helpers/normalized-message.js"
 
 const openCodeTurn = [
   { id: "msg_001", role: "user", content: "打开Outlook", created_at: "2026-08-21T10:00:00Z" },

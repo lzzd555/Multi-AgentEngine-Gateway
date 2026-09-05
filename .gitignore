@@ -9,3 +9,4 @@ gateway.config.json
 .vscode/
 # 仅忽略仓库根部的评测工作区；未锚定的 test/ 会连 bridge/test/ 下的新增测试一起吞掉
 /test/
+.DS_Store

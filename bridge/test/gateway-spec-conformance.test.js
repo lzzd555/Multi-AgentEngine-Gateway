@@ -13,7 +13,7 @@ import { buildGateway } from "../src/gateway/main.js"
 import { createEngine } from "../src/gateway/engines/engine-adapter.js"
 import { createFakeOpencodeUpstream } from "./helpers/fake-opencode-upstream.js"
 import { FakeOmpAcp } from "./helpers/fake-omp-acp.js"
-import { isValidNormalizedMessage } from "../src/gateway/message-normalizer.js"
+import { isValidNormalizedMessage } from "./helpers/normalized-message.js"
 
 // The shipped assembly: buildGateway accepts a pre-built engineInstance, wires the engine's
 // interaction hooks onto the gateway queue and forwards engine-emitted spec events onto the SSE

@@ -1,8 +1,38 @@
-import { findExecutable } from "./launcher.js"
-import { createCodexHistoryLoader } from "./codex-session-history.js"
+import fs from "node:fs"
+import path from "node:path"
 import { createOmpHistoryLoader } from "./omp-session-history.js"
 import { createPiHistoryLoader } from "./pi-session-history.js"
 import { OMP_EXTENSION_ACTION_PROVIDERS } from "./extension-actions.js"
+
+function executableNames(name, platform = process.platform) {
+  if (platform !== "win32") return [name]
+  const extensions = (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM")
+    .split(";")
+    .filter(Boolean)
+    .map((extension) => extension.toLowerCase())
+  return [name, ...extensions.map((extension) => `${name}${extension}`)]
+}
+
+function executable(candidate, { platform = process.platform, exists = fs.existsSync, access = fs.accessSync } = {}) {
+  if (!exists(candidate)) return false
+  if (platform === "win32") return true
+  try {
+    access(candidate, fs.constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+export function findExecutable(name, { pathValue = process.env.PATH ?? "", platform = process.platform, exists = fs.existsSync, access = fs.accessSync } = {}) {
+  for (const directory of pathValue.split(path.delimiter).filter(Boolean)) {
+    for (const candidate of executableNames(name, platform)) {
+      const fullPath = path.join(directory, candidate)
+      if (executable(fullPath, { platform, exists, access })) return fullPath
+    }
+  }
+  return null
+}
 
 const COMMON_CAPABILITIES = {
   sessions: true,
@@ -18,6 +48,9 @@ const COMMON_CAPABILITIES = {
   sessionDelete: false
 }
 
+// 网关只经 createEngine 放行 opencode/omp/pi 三个引擎；历史上迁移自 harness-remote 的
+// claude/codex profile 在本仓库运行时不可达，已随 codex-session-history.js 一并移除。
+// 若未来接入新 ACP 引擎，在此补 profile 并在 engine-adapter.js 的 createEngine 放行。
 export const HARNESS_PROFILES = {
   omp: {
     id: "omp",
@@ -84,77 +117,6 @@ export const HARNESS_PROFILES = {
       ...COMMON_CAPABILITIES,
       models: true,
       todos: false,
-      commands: true,
-      actions: false,
-      sessionRename: true,
-      sessionDelete: true
-    }
-  },
-  claude: {
-    id: "claude",
-    label: "Claude Code",
-    // Uses the official ACP adapter for the Claude Agent SDK. The adapter speaks ACP JSON-RPC
-    // over stdio and wraps @anthropic-ai/claude-agent-sdk under the hood. The user must have
-    // run `claude login` or set ANTHROPIC_API_KEY before starting the bridge.
-    // Requires Node 22+ (same as the PI adapter it mirrors).
-    command: process.platform === "win32" ? "npx.cmd" : "npx",
-    // Pinned to avoid the `notarget` scenario that PI hit. Like PI, install the scoped package
-    // explicitly and invoke its published binary instead of relying on npx package-spec inference.
-    args: ["--yes", "--package=@agentclientprotocol/claude-agent-acp@0.63.0", "claude-agent-acp"],
-    adapterCommand: "claude-agent-acp",
-    permissionMode: "allow",
-    preserveListedTimestamps: true,
-    reloadOnHistoryRefresh: false,
-    // The current adapter exposes model/mode but no low/medium/high reasoning-effort selector.
-    // Keep this empty rather than fabricating OpenCode-style variants.
-    modelVariantConfigIDs: [],
-    capabilities: {
-      ...COMMON_CAPABILITIES,
-      // The adapter advertises a `model` config option like OMP and PI do; its values are bare ids
-      // rather than `provider/model`, which is handled where the response is built.
-      models: true,
-      todos: true,
-      commands: false,
-      actions: false,
-      sessionRename: true,
-      sessionDelete: true
-    }
-  },
-  codex: {
-    id: "codex",
-    label: "Codex CLI",
-    // Uses the official ACP adapter for the OpenAI Codex CLI. The adapter speaks ACP JSON-RPC
-    // over stdio and embeds @openai/codex, so no separate Codex installation is needed. The
-    // user must have run `codex login` (ChatGPT account) or set an OpenAI API key first.
-    // Requires Node 22+ (same as the PI and Claude adapters it mirrors).
-    command: process.platform === "win32" ? "npx.cmd" : "npx",
-    // Pinned to avoid the `notarget` scenario that PI hit. Like PI, install the scoped package
-    // explicitly and invoke its published binary instead of relying on npx package-spec inference.
-    args: ["--yes", "--package=@agentclientprotocol/codex-acp@1.1.14", "codex-acp"],
-    adapterCommand: "codex-acp",
-    permissionMode: "allow",
-    // The adapter offers `api-key` before `chat-gpt`; the former demands CODEX_API_KEY or
-    // OPENAI_API_KEY, while a `codex login` leaves ChatGPT credentials the `chat-gpt` method
-    // reads from disk. Prefer the login, exactly like the generic default already avoids
-    // env-var methods for the other harnesses.
-    authMethod: "chat-gpt",
-    // Codex holds a single-writer lock for as long as a client keeps a thread open, so a session the
-    // desktop app is showing cannot be loaded over ACP at all. Its rollout file can, which is what
-    // lets those sessions be read here. `messages` already forces a reload for every session this
-    // bridge does not own, so a conversation still running in Codex keeps updating without asking
-    // for the replay that the sessions we do own would otherwise repeat on each refresh.
-    historyLoader: createCodexHistoryLoader(),
-    preserveListedTimestamps: true,
-    reloadOnHistoryRefresh: false,
-    // The official adapter exposes reasoning effort independently from model selection.
-    modelVariantConfigIDs: ["reasoning_effort", "reasoningEffort"],
-    capabilities: {
-      ...COMMON_CAPABILITIES,
-      // The adapter advertises model ids as bare ids rather than `provider/model`, which is
-      // handled where the response is built. Slash commands and plan updates arrive through
-      // the same notifications OMP emits, so commands and todos reflect the actual wire data.
-      models: true,
-      todos: true,
       commands: true,
       actions: false,
       sessionRename: true,

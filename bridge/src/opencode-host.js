@@ -236,19 +236,3 @@ export class ManagedOpenCodeHost extends EventEmitter {
     this.emit("unavailable", error)
   }
 }
-
-export function trackManagedHostLifecycle(host, registry, hostID) {
-  const start = host.start.bind(host)
-  host.start = async (...args) => {
-    try {
-      const result = await start(...args)
-      registry.updateHost(hostID, { state: "available", processID: host.processID })
-      return result
-    } catch (error) {
-      registry.updateHost(hostID, { state: "unavailable", processID: undefined })
-      throw error
-    }
-  }
-  host.on("unavailable", () => registry.updateHost(hostID, { state: "unavailable", processID: undefined }))
-  return host
-}
