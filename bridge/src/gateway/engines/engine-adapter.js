@@ -40,6 +40,7 @@ export function createEngine(id, options = {}) {
   }
   return withPromptRetry(assertEngineConformance(engine), {
     ...(options.promptMaxAttempts !== undefined ? { maxAttempts: options.promptMaxAttempts } : {}),
-    ...(options.promptTimeoutMs !== undefined ? { baseTimeoutMs: options.promptTimeoutMs } : {})
+    ...(options.promptTimeoutMs !== undefined ? { baseTimeoutMs: options.promptTimeoutMs } : {}),
+    ...(options.promptBackoff !== undefined ? { backoff: options.promptBackoff } : {})
   })
 }

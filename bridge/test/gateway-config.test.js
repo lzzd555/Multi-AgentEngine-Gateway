@@ -713,3 +713,12 @@ test("prompt timeout and attempts are validated", () => {
   withTempConfig({ ...VALID, engines: { opencode: { promptMaxAttempts: 0 } } }, (file) => assert.throws(() => loadGatewayConfig({ configPath: file }), /promptMaxAttempts must be an integer >= 1/))
   withTempConfig({ ...VALID, engines: { opencode: { promptMaxAttempts: 1.5 } } }, (file) => assert.throws(() => loadGatewayConfig({ configPath: file }), /promptMaxAttempts must be an integer >= 1/))
 })
+
+test("promptBackoff is validated (exponential|fixed) and passed through to engineOptions", () => {
+  const config = { ...VALID, engines: { opencode: { promptTimeoutMs: 300_000, promptMaxAttempts: 3, promptBackoff: "fixed" } } }
+  const runtime = assembleGatewayRuntime({ engine: "opencode" }, config, {}, { stateDir: "/tmp/gwbackoff-na" })
+  assert.equal(runtime.engineOptions.promptBackoff, "fixed")
+  withTempConfig({ ...VALID, engines: { opencode: { promptBackoff: "linear" } } }, (file) => {
+    assert.throws(() => loadGatewayConfig({ configPath: file }), /promptBackoff must be one of exponential, fixed/)
+  })
+})

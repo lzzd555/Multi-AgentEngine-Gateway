@@ -135,5 +135,82 @@ test("retry warnings surface on stderr by default (no injected warn)", async () 
   } finally {
     process.stderr.write = original
   }
-  assert.ok(seen.some((line) => /prompt attempt 1\/2 timed out after 1000ms/.test(line)), `stderr 应出现重试告警，实际: ${JSON.stringify(seen)}`)
+  assert.ok(seen.some((line) => /prompt attempt 1\/2 .*timed out after 1000ms/.test(line)), `stderr 应出现重试告警，实际: ${JSON.stringify(seen)}`)
+})
+
+// —— 活动看门狗 ——
+// 看门狗走可取消的 setTimeoutImpl（与预算竞速钟 sleepImpl 分离，互不干扰）
+function controlledTimers() {
+  const pending = []
+  return {
+    setTimeoutImpl: (fn, ms) => { pending.push({ fn, ms, dead: false }); return pending.length - 1 },
+    clearTimeoutImpl: (id) => { if (pending[id]) pending[id].dead = true },
+    fireWithMs: (ms) => {
+      const timer = pending.find((t) => t.ms === ms && !t.dead)
+      if (timer) timer.fn()
+    }
+  }
+}
+const neverSleep = () => new Promise(() => {})
+
+function activityEngine({ onPrompt } = {}) {
+  const listeners = new Set()
+  const calls = { promptOptions: [], aborts: 0 }
+  const engine = {
+    id: "fake", label: "Fake", capabilities: { questions: false, permissions: false, abort: true },
+    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
+    async prompt(sessionID, options) {
+      calls.promptOptions.push(options)
+      return onPrompt?.(calls.promptOptions.length, () => listeners.forEach((l) => l({ type: "message.part.updated", properties: { sessionID } })))
+    },
+    async abort() { calls.aborts += 1 }
+  }
+  return { engine, calls }
+}
+
+test("an attempt with zero engine activity is cut by the activity watchdog and retried", async () => {
+  const { engine, calls } = activityEngine({
+    onPrompt: (attempt, emit) => (attempt === 1 ? new Promise(() => {}) : (emit(), "ok"))
+  })
+  const timers = controlledTimers()
+  const warnings = []
+  const wrapped = withPromptRetry(engine, {
+    maxAttempts: 2, baseTimeoutMs: 1000, timeoutSlackMs: 0,
+    firstActivityTimeoutMs: 100, sleepImpl: neverSleep,
+    setTimeoutImpl: timers.setTimeoutImpl, clearTimeoutImpl: timers.clearTimeoutImpl,
+    warn: (m) => warnings.push(m)
+  })
+  const result = wrapped.prompt("s1", { text: "hi" })
+  await tick()
+  timers.fireWithMs(100) // 只触发看门狗钟（预算竞速钟永远不 resolve）
+  assert.equal(await result, "ok", "零活动尝试被看门狗切掉后第 2 次成功")
+  assert.equal(calls.aborts, 1, "看门狗切掉后同样先中止再重发")
+  assert.ok(warnings.some((line) => /no model activity within 100ms/.test(line)), `告警应含看门狗信息: ${warnings}`)
+})
+
+test("engine activity before the watchdog window keeps a healthy attempt alive", async () => {
+  const { engine, calls } = activityEngine({
+    onPrompt: (attempt, emit) => { emit(); return "ok" }
+  })
+  const timers = controlledTimers()
+  const wrapped = withPromptRetry(engine, {
+    maxAttempts: 2, baseTimeoutMs: 1000, timeoutSlackMs: 0,
+    firstActivityTimeoutMs: 100, sleepImpl: neverSleep,
+    setTimeoutImpl: timers.setTimeoutImpl, clearTimeoutImpl: timers.clearTimeoutImpl
+  })
+  assert.equal(await wrapped.prompt("s1", { text: "hi" }), "ok")
+  assert.equal(calls.promptOptions.length, 1, "健康活动不被看门狗误杀")
+  assert.equal(calls.aborts, 0)
+})
+
+test("fixed backoff keeps every attempt at the base budget", async () => {
+  const { engine, calls } = activityEngine({
+    onPrompt: () => { throw Object.assign(new Error("OpenCode prompt timed out after 1000ms"), { promptTimeout: true }) }
+  })
+  const wrapped = withPromptRetry(engine, {
+    maxAttempts: 3, baseTimeoutMs: 1000, timeoutSlackMs: 0, backoff: "fixed",
+    firstActivityTimeoutMs: 0, sleepImpl: neverSleep
+  })
+  await assert.rejects(() => wrapped.prompt("s1", { text: "hi" }), /3 attempt\(s\) \(budgets 1000\/1000\/1000ms\)/)
+  assert.deepEqual(calls.promptOptions.map((o) => o.timeoutMs), [1000, 1000, 1000])
 })

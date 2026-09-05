@@ -34,9 +34,10 @@
   },
   "engines": {
     "opencode": {
-      "$comment": "可选：引擎层 prompt 超时与倍增重试。promptTimeoutMs=第1次尝试的最大时长（默认600000）；promptMaxAttempts=总尝试次数（默认1=不重试）；第N次尝试的时长=promptTimeoutMs×2^(N-1)，重试前自动中止残留回合。最坏总墙钟=T+2T+4T...，如 300s×3 次=35min。仅超时触发重试，其他错误立即上抛。",
+      "$comment": "可选：引擎层 prompt 超时与倍增重试。promptTimeoutMs=第1次尝试的最大时长（默认600000）；promptMaxAttempts=总尝试次数（默认1=不重试）；promptBackoff: exponential(默认,第N次=T×2^(N-1))|fixed(等额分段,对单次调用挂死更健壮)，重试前自动中止残留回合。最坏总墙钟=T+2T+4T...，如 300s×3 次=35min。仅超时触发重试，其他错误立即上抛。",
       "promptTimeoutMs": 300000,
-      "promptMaxAttempts": 3
+      "promptMaxAttempts": 3,
+      "promptBackoff": "fixed"
     },
     "omp": {},
     "pi": {}

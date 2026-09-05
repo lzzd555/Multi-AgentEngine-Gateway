@@ -87,6 +87,9 @@ function validateEngines(engines, sourcePath) {
     if (engine.promptMaxAttempts !== undefined && (!Number.isInteger(engine.promptMaxAttempts) || engine.promptMaxAttempts < 1)) {
       throw new Error(`${sourcePath}: engines.${id}.promptMaxAttempts must be an integer >= 1`)
     }
+    if (engine.promptBackoff !== undefined && !["exponential", "fixed"].includes(engine.promptBackoff)) {
+      throw new Error(`${sourcePath}: engines.${id}.promptBackoff must be one of exponential, fixed`)
+    }
   }
   return engines
 }
@@ -421,6 +424,7 @@ export function assembleGatewayRuntime(options, config, environment = process.en
     // prompt 超时/重试仅在显式配置时下发（缺省不注入，引擎与重试层各守默认 600s × 1 次）
     ...(engineConfig.promptTimeoutMs !== undefined ? { promptTimeoutMs: engineConfig.promptTimeoutMs } : {}),
     ...(engineConfig.promptMaxAttempts !== undefined ? { promptMaxAttempts: engineConfig.promptMaxAttempts } : {}),
+    ...(engineConfig.promptBackoff !== undefined ? { promptBackoff: engineConfig.promptBackoff } : {}),
     ...(Object.keys(provisioned.env).length > 0 ? { env: provisioned.env } : {}),
     // omp 的 ACP 模式不从磁盘 mcp.json 发现 MCP（enableMCP:false），只能由网关（ACP 客户端）经
     // session/new.mcpServers 下发；pi/opencode 仍走各自的文件供给路径，收到 mcp 也不消费。
