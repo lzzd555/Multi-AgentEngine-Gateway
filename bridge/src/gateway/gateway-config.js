@@ -53,7 +53,7 @@ function validateProvider(id, definition, sourcePath) {
   if (!ALLOWED_APIS.includes(definition.api)) {
     throw new Error(`${sourcePath}: model.providers.${id}.api must be one of ${ALLOWED_APIS.join(", ")}`)
   }
-  if (typeof definition.models !== "object" || definition === null || Array.isArray(definition.models) || Object.keys(definition.models).length === 0) {
+  if (typeof definition.models !== "object" || definition.models === null || Array.isArray(definition.models) || Object.keys(definition.models).length === 0) {
     throw new Error(`${sourcePath}: model.providers.${id}.models must be a non-empty object`)
   }
   for (const [modelID, meta] of Object.entries(definition.models)) {
@@ -61,7 +61,7 @@ function validateProvider(id, definition, sourcePath) {
   }
 }
 
-function validateEngines(engines, providers, sourcePath) {
+function validateEngines(engines, sourcePath) {
   if (engines === undefined) return {}
   if (typeof engines !== "object" || engines === null || Array.isArray(engines)) {
     throw new Error(`${sourcePath}: engines must be an object`)
@@ -119,7 +119,7 @@ export function validateGatewayConfig(parsed, sourcePath, environment = process.
     }
     defaultModel = modelSection.default
   }
-  const engines = validateEngines(parsed.engines, providers, sourcePath)
+  const engines = validateEngines(parsed.engines, sourcePath)
   for (const [id, engine] of Object.entries(engines)) {
     if (engine.command !== undefined) engines[id] = { ...engine, command: expandHome(engine.command) }
   }
@@ -152,9 +152,15 @@ export function resolveStateDir(environment = process.env) {
 // curl/Bun 引擎不受影响。给子进程的 NODE_OPTIONS 前置 --require tls-compat-shim.cjs，限定经典曲线
 // 组即可恢复握手。NODE_OPTIONS 自 Node 12.16 起支持双引号包裹的取值，路径用双引号包起来后，
 // 含空格的仓库路径也能经它正确传递，故按 `--require "<path>"` 形式拼接。
-export function nodeOptionsWithTlsShim(environment = process.env) {
-  const shim = fileURLToPath(new URL("../tls-compat-shim.cjs", import.meta.url))
-  const flag = `--require "${shim}"`
+export function nodeOptionsWithTlsShim(environment = process.env, { platform = process.platform, shimPath } = {}) {
+  const shim = shimPath ?? fileURLToPath(new URL("../tls-compat-shim.cjs", import.meta.url))
+  // Node 解析 NODE_OPTIONS 时把双引号内的反斜杠当转义符：Windows 原生路径 "C:\Users\test" 会被
+  // 静默吞成分隔符全无的 "C:Userstest"（实测；结尾的 \" 更会直接 unterminated string），pi 子进程
+  // 随即 Cannot find module。因此 Windows 路径必须换用正斜杠——Node 在 Windows 上的模块解析同样
+  // 接受正斜杠，且正斜杠不参与引号内的转义语法。非 Windows 平台不改写：POSIX 文件名允许包含
+  // 字面反斜杠，改写会指向另一个文件。
+  const flagPath = platform === "win32" ? shim.replaceAll("\\", "/") : shim
+  const flag = `--require "${flagPath}"`
   const existing = environment.NODE_OPTIONS
   if (existing && existing.includes("tls-compat-shim")) return existing
   return existing ? `${flag} ${existing}` : flag

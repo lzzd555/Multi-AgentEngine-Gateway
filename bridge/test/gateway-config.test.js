@@ -124,6 +124,9 @@ test("provider with bad baseUrl or api is rejected", () => {
   const badApi = structuredClone(VALID)
   badApi.model.providers.zaicoding.api = "grpc"
   withTempConfig(badApi, (file) => assert.throws(() => loadGatewayConfig({ configPath: file }), /api must be one of/))
+  const nullModels = structuredClone(VALID)
+  nullModels.model.providers.zaicoding.models = null
+  withTempConfig(nullModels, (file) => assert.throws(() => loadGatewayConfig({ configPath: file }), /models must be a non-empty object/))
 })
 
 test("builtin zai provider family produces a warning, not an error", () => {
@@ -579,6 +582,30 @@ test("NODE_OPTIONS shim flag quotes the path so space-containing dirs load", () 
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test("NODE_OPTIONS shim path converts backslashes to forward slashes on Windows", () => {
+  const windowsPath = "C:\\Users\\test user\\project\\bridge\\src\\tls-compat-shim.cjs"
+  const flag = nodeOptionsWithTlsShim({}, { platform: "win32", shimPath: windowsPath })
+  assert.equal(flag, '--require "C:/Users/test user/project/bridge/src/tls-compat-shim.cjs"')
+  assert.ok(!flag.includes("\\"), "no backslash may survive into NODE_OPTIONS on win32")
+  // 非 Windows 平台保持原样：POSIX 文件名允许字面反斜杠，改写会指向另一个文件。
+  const kept = nodeOptionsWithTlsShim({}, { platform: "darwin", shimPath: windowsPath })
+  assert.equal(kept, `--require "${windowsPath}"`)
+})
+
+test("Windows-form shim flag survives Node's NODE_OPTIONS parsing character-for-character", () => {
+  // Node 的 NODE_OPTIONS 解析器把引号内的反斜杠当转义符吞掉（"C:\Users\test" → "C:Userstest"），
+  // 正斜杠形态必须逐字符无损地到达 --require。C:/ 盘路径在本机（POSIX）不存在，加载必然失败，
+  // 错误信息里回显的模块路径即为解析器实际拿到的路径——与原路径一致即证明无损。
+  const windowsPath = "C:\\Users\\test user\\project\\bridge\\src\\tls-compat-shim.cjs"
+  const flag = nodeOptionsWithTlsShim({}, { platform: "win32", shimPath: windowsPath })
+  const child = spawnSync(process.execPath, ["-e", ""], { env: { ...process.env, NODE_OPTIONS: flag } })
+  assert.notEqual(child.status, 0, "requiring a nonexistent C:/ path must fail")
+  assert.match(
+    child.stderr.toString(),
+    /Cannot find module 'C:\/Users\/test user\/project\/bridge\/src\/tls-compat-shim\.cjs'/
+  )
 })
 
 test("assembleGatewayRuntime forwards configured mcp through engineOptions", () => {

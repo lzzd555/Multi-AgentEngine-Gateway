@@ -25,6 +25,7 @@ export function createInteractionQueue({ now = () => new Date().toISOString() } 
     const entry = entries.get(id)
     if (!entry || entry.done) return false
     entry.done = true
+    entries.delete(id)
     entry.resolveSettled(answer)
     return true
   }
