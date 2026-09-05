@@ -1,6 +1,7 @@
 // bridge/test/gateway-server-sessions.test.js
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import http from "node:http"
 import { createGatewayServer } from "../src/gateway/gateway-server.js"
 import { createEventBus } from "../src/gateway/event-bus.js"
 import { createSessionRegistry } from "../src/gateway/session-registry.js"
@@ -138,6 +139,41 @@ test("session create: body directory wins over query, query still works without 
       body: JSON.stringify({ title: "b", directory: "/tmp/from-body" })
     })
     assert.equal(engine.createdSessions.at(-1).directory, "/tmp/from-body")
+  } finally {
+    server.close()
+  }
+})
+
+test("an oversized body is rejected with 413 instead of buffering", async () => {
+  const { server, base } = await startGateway()
+  try {
+    const response = await fetch(`${base}/session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "x".repeat(10 * 1024 * 1024 + 1024)
+    })
+    assert.equal(response.status, 413)
+    const body = await response.json()
+    assert.equal(body.code, "PAYLOAD_TOO_LARGE")
+    assert.match(body.message, /exceeds/)
+  } finally {
+    server.close()
+  }
+})
+
+test("a client that drops mid-body does not wedge the server", async () => {
+  const { server, base } = await startGateway()
+  try {
+    const dropped = http.request(`${base}/session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": "1024" }
+    })
+    dropped.on("error", () => {}) // the deliberate destroy surfaces as ECONNRESET here
+    dropped.write('{"title":')
+    dropped.destroy()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const health = await fetch(`${base}/health`)
+    assert.equal(health.status, 200, "server stays responsive after a dropped body")
   } finally {
     server.close()
   }

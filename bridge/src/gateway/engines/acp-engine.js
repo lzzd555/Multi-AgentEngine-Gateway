@@ -17,6 +17,16 @@ import { buildAcpMcpServers } from "../gateway-capabilities.js"
 
 const ACP_CAPABILITIES = { questions: false, permissions: true, abort: true }
 
+// The contract (engine-adapter.js) maps engine-unreachable failures to HTTP 502 via the
+// ENGINE_UNAVAILABLE error code. The ACP driver reports those as plain Errors whose messages
+// are its stable user-facing wording, so they are recognized here at the seam and tagged.
+const ADAPTER_UNAVAILABLE = /ACP adapter (?:is not running|exited|request timed out|closed|startup timed out)/
+
+function unavailableOnAdapterFailure(error) {
+  if (ADAPTER_UNAVAILABLE.test(error?.message ?? "")) error.code = "ENGINE_UNAVAILABLE"
+  return error
+}
+
 export function createAcpEngine({
   profileId,
   command,
@@ -65,6 +75,17 @@ export function createAcpEngine({
       const { settled } = askPermissionHook(record)
       const answer = await settled
       return permissionDecision(answer ?? {}, options)
+    }
+  })
+
+  // An adapter crash must not stay silent until the next request: pending RPCs are already
+  // rejected by the client (in-flight turns fail and return to idle through the server's
+  // finally), and every session this engine reported gets a spec session.error on the SSE
+  // stream right away. A deliberate close() never emits "exit" (AcpClient clears its child
+  // first), so shutdown stays quiet.
+  client.on?.("exit", (error) => {
+    for (const sessionID of sessionStatuses.keys()) {
+      emit({ type: "session.error", properties: { sessionID, error: { message: error?.message ?? "ACP adapter exited" } } })
     }
   })
 
@@ -143,7 +164,13 @@ export function createAcpEngine({
     capabilities: ACP_CAPABILITIES,
 
     async initialize() {
-      if (!acp) await client.start()
+      if (!acp) {
+        try {
+          await client.start()
+        } catch (error) {
+          throw unavailableOnAdapterFailure(error)
+        }
+      }
     },
 
     async dispose() {
@@ -156,16 +183,21 @@ export function createAcpEngine({
       askPermissionHook = askPermission
     },
 
-    /** Map a spec reply onto the ACP options the adapter offered. */
-    permissionDecision,
-
     async createSession({ title, directory, model } = {}) {
-      const session = await engineService.createSession({ directory: directory ?? process.cwd(), title, model })
-      return { id: session.id }
+      try {
+        const session = await engineService.createSession({ directory: directory ?? process.cwd(), title, model })
+        return { id: session.id }
+      } catch (error) {
+        throw unavailableOnAdapterFailure(error)
+      }
     },
 
     async deleteSession(sessionID) {
-      await engineService.deleteSession(sessionID)
+      try {
+        await engineService.deleteSession(sessionID)
+      } catch (error) {
+        throw unavailableOnAdapterFailure(error)
+      }
     },
 
     async listSessionStatuses() {
@@ -189,16 +221,25 @@ export function createAcpEngine({
           }
           return false
         }
-        if (!(await replyAppears())) throw error
+        if (!(await replyAppears())) throw unavailableOnAdapterFailure(error)
       }
     },
 
     async abort(sessionID) {
-      engineService.abort(sessionID)
+      try {
+        engineService.abort(sessionID)
+      } catch (error) {
+        throw unavailableOnAdapterFailure(error)
+      }
     },
 
     async listMessages(sessionID) {
-      const messages = await engineService.messages(sessionID, false)
+      let messages
+      try {
+        messages = await engineService.messages(sessionID, false)
+      } catch (error) {
+        throw unavailableOnAdapterFailure(error)
+      }
       return normalizeAcpMessages(messages, { busy: statusOf(sessionID) === "busy" })
     },
 

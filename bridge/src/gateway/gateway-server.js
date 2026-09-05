@@ -10,17 +10,40 @@ function sendError(response, status, code, message) {
   writeJSON(response, status, { code, message })
 }
 
+// Bodies are small JSON (prompts, replies, session titles); a runaway client must not be able
+// to buffer unbounded data in gateway memory. 10 MiB is far above any legitimate request.
+const MAX_BODY_BYTES = 10 * 1024 * 1024
+
 function readBody(request) {
   return new Promise((resolve, reject) => {
     let raw = ""
-    request.on("data", (chunk) => { raw += chunk })
+    let size = 0
+    let overLimit = false
+    request.on("data", (chunk) => {
+      if (overLimit) return // stop buffering; socket backpressure holds the rest
+      size += chunk.length
+      if (size > MAX_BODY_BYTES) {
+        overLimit = true
+        raw = ""
+        reject(Object.assign(new Error(`request body exceeds ${MAX_BODY_BYTES} bytes`), { statusCode: 413 }))
+        return
+      }
+      raw += chunk
+    })
     request.on("end", () => {
+      if (overLimit) return
       if (!raw) return resolve({})
       try {
         resolve(JSON.parse(raw))
       } catch {
         reject(Object.assign(new Error("request body is not valid JSON"), { statusCode: 400 }))
       }
+    })
+    // A client that drops the connection mid-body never emits end; settle so the async handler
+    // is not held open (with its response) until Node's default requestTimeout (~300s). The
+    // reject is a no-op when end already resolved the promise.
+    request.on("close", () => {
+      if (!overLimit) reject(Object.assign(new Error("client disconnected"), { statusCode: 400 }))
     })
     request.on("error", reject)
   })
@@ -100,7 +123,7 @@ export function createGatewayServer({
         return sendError(response, 404, "NOT_FOUND", "Permission request not found")
       }
 
-      const sessionMatch = path.match(/^\/session\/([^/]+)(?:\/(message|prompt_async|abort|stop|todo))?$/)
+      const sessionMatch = path.match(/^\/session\/([^/]+)(?:\/(message|prompt_async|abort|stop))?$/)
       if (!sessionMatch) return sendError(response, 404, "NOT_FOUND", "Not found")
       const sessionID = decodeURIComponent(sessionMatch[1])
       const action = sessionMatch[2]
@@ -126,6 +149,7 @@ export function createGatewayServer({
       return sendError(response, 404, "NOT_FOUND", "Not found")
     } catch (error) {
       if (error?.statusCode === 400) return sendError(response, 400, "VALIDATION_ERROR", error.message)
+      if (error?.statusCode === 413) return sendError(response, 413, "PAYLOAD_TOO_LARGE", error.message)
       const [status, code, message] = engineErrorResponse(error)
       return sendError(response, status, code, message)
     }

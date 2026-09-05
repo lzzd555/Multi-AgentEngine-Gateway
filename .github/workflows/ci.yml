@@ -1,0 +1,24 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # package.json engines 声明 >=20，评测交付说明要求 >=22；两档都跑以统一口径。
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # 测试套件零外部依赖（网关核心零依赖承诺），无需 npm install。
+      - name: Run bridge test suite
+        run: npm test
+      - name: Package solution (guards the deliverable)
+        run: npm run package

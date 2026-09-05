@@ -158,6 +158,68 @@ test("a turn that failed without any reply still rejects", async () => {
   await assert.rejects(() => engine.prompt("s1", { text: "hi" }), /provider error/)
 })
 
+test("adapter-level failures are tagged ENGINE_UNAVAILABLE (502 mapping)", async () => {
+  const acpStub = { on: () => {}, start: async () => {}, request: async () => ({}), notify: () => {}, close: () => {} }
+  const serviceStub = {
+    subscribe: () => () => {},
+    createSession: async () => { throw new Error("ACP adapter is not running") },
+    deleteSession: async () => { throw new Error("ACP adapter exited (1, ENOENT)") },
+    status: () => ({ type: "idle" }),
+    messages: async () => { throw new Error("ACP adapter closed") },
+    abort: () => { throw new Error("ACP adapter request timed out: session/prompt") },
+    promptAndWait: async () => {}
+  }
+  const engine = createAcpEngine({ profileId: "omp", acp: acpStub, service: serviceStub })
+  await assert.rejects(() => engine.createSession({}), (error) => error.code === "ENGINE_UNAVAILABLE")
+  await assert.rejects(() => engine.deleteSession("s1"), (error) => error.code === "ENGINE_UNAVAILABLE")
+  await assert.rejects(() => engine.listMessages("s1"), (error) => error.code === "ENGINE_UNAVAILABLE")
+  await assert.rejects(() => engine.abort("s1"), (error) => error.code === "ENGINE_UNAVAILABLE")
+})
+
+test("ordinary engine errors keep their 500-class shape", async () => {
+  const acpStub = { on: () => {}, start: async () => {}, request: async () => ({}), notify: () => {}, close: () => {} }
+  const serviceStub = {
+    subscribe: () => () => {},
+    createSession: async () => { throw new Error("Internal error: provider error") },
+    deleteSession: async () => {},
+    status: () => ({ type: "idle" }),
+    messages: async () => [],
+    abort: () => {},
+    promptAndWait: async () => {}
+  }
+  const engine = createAcpEngine({ profileId: "omp", acp: acpStub, service: serviceStub })
+  await assert.rejects(
+    () => engine.createSession({}),
+    (error) => error.code === undefined && /provider error/.test(error.message)
+  )
+})
+
+test("an adapter exit emits session.error for every session the engine reported", async () => {
+  const acpStub = Object.assign(new EventEmitter(), {
+    start: async () => {}, request: async () => ({}), notify: () => {}, close: () => {}
+  })
+  let serviceListener = () => {}
+  const serviceStub = {
+    subscribe: (listener) => { serviceListener = listener; return () => {} },
+    createSession: async () => ({ id: "s1" }),
+    deleteSession: async () => {},
+    status: () => ({ type: "idle" }),
+    messages: async () => [],
+    abort: () => {},
+    promptAndWait: async () => {}
+  }
+  const engine = createAcpEngine({ profileId: "omp", acp: acpStub, service: serviceStub })
+  const events = []
+  engine.subscribe((event) => events.push(event))
+  await engine.createSession({ title: "t" })
+  serviceListener({ type: "session.created", sessionId: "s1" }) // the engine learns the session
+  acpStub.emit("exit", new Error("ACP adapter exited (9, SIGKILL): out of memory"))
+  const error = events.find((event) => event.type === "session.error")
+  assert.ok(error, "a session.error was emitted")
+  assert.equal(error.properties.sessionID, "s1")
+  assert.match(error.properties.error.message, /SIGKILL/)
+})
+
 function fakeAcpChild() {
   const child = new EventEmitter()
   child.stdout = new EventEmitter()
